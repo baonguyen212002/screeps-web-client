@@ -1,73 +1,117 @@
-# React + TypeScript + Vite
+# Screeps Web Client
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+React + TypeScript + Vite web client for a local/private Screeps server.
 
-Currently, two official plugins are available:
+## Features
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+- Room rendering with live socket updates
+- Console, code editor, memory, market, messages, leaderboard
+- Local auth flow for private server:
+  - `POST /api/auth/signin`
+  - `POST /api/auth/register`
+- World map with terrain, ownership overlay, and room resource markers
 
-## React Compiler
+## Repo Layout
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+- Client repo: `/home/shino/screeps-web-client`
+- Server repo: `/home/shino/repos/screeps`
+- Server world data: `/home/shino/repos/screeps/world`
 
-## Expanding the ESLint configuration
+## Requirements
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+- Node.js 20+ for the web client
+- Node.js 22 for the Screeps server
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
+The private Screeps server in this workspace requires Node 22 for engine compatibility.
 
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
+## Run The Server
 
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+Use Node 22 explicitly:
+
+```bash
+cd /home/shino/repos/screeps/world
+/home/shino/.nvm/versions/node/v22.21.1/bin/node /home/shino/repos/screeps/bin/screeps.js start
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+Server endpoints:
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+- Game/API: `http://127.0.0.1:21025`
+- CLI: `127.0.0.1:21026`
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+## Run The Client
+
+```bash
+cd /home/shino/screeps-web-client
+npm install
+npm run dev
 ```
+
+Default Vite dev server:
+
+- `http://127.0.0.1:4173`
+
+The dev server proxies these paths to Screeps:
+
+- `/api`
+- `/socket`
+- `/room-history`
+
+See [vite.config.ts](./vite.config.ts).
+
+## Login
+
+This client is configured for local auth on the patched private server.
+
+Routes used:
+
+- `POST /api/auth/signin`
+- `POST /api/auth/register`
+- `GET /api/auth/me`
+
+Example test account used during local verification:
+
+- username: `test1`
+- password: `12345`
+
+## World Map Notes
+
+The world map uses the real room list from:
+
+- `GET /api/game/rooms`
+
+It does not assume a symmetric public Screeps world layout. This matters for custom/private worlds whose room names do not include both `E/W` and `N/S` halves.
+
+Resource markers shown on the world map are fetched from:
+
+- `GET /api/game/room-objects?room=<ROOM>`
+
+Markers currently rendered:
+
+- `source`
+- `mineral`
+- `deposit`
+
+## Build
+
+```bash
+npm run build
+```
+
+Production output:
+
+- `dist/`
+
+## Current Local Server Patches
+
+The server in this workspace includes local patches for:
+
+- Steamless/local auth
+- `signin` / `register` auth routes
+- `GET /api/game/room-objects`
+- `GET /api/game/rooms`
+
+Patch source:
+
+- `/home/shino/repos/screeps/scripts/patch-steamless.js`
+
+If server dependencies are reinstalled, make sure that patch is still applied.
