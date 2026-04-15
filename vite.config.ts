@@ -5,6 +5,10 @@ export default defineConfig({
   plugins: [react()],
   define: {
     global: 'globalThis',
+    'process.env': {},
+  },
+  optimizeDeps: {
+    exclude: ['@screeps/renderer']
   },
   server: {
     host: '0.0.0.0',

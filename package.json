@@ -13,6 +13,7 @@
     "@monaco-editor/react": "^4.7.0",
     "@screeps/renderer": "^1.6.9",
     "lucide-react": "^1.8.0",
+    "monaco-editor": "0.53.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "sockjs-client": "^1.6.1"
