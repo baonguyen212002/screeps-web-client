@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import Editor from '@monaco-editor/react'
+import Editor, { type Monaco } from '@monaco-editor/react'
 import SockJS from 'sockjs-client'
+import screepsTypes from 'virtual:screeps-types'
 
 import './App.css'
 import RoomRenderer from './RoomRenderer'
@@ -148,6 +149,8 @@ const DEFAULT_ROOM = 'W3N5'
 const ROOM_SIZE = 50
 const DEFAULT_SERVER_URL = window.location.origin
 
+const CONTROLLER_LEVELS: Record<number, number> = { 1: 200, 2: 45000, 3: 135000, 4: 405000, 5: 1215000, 6: 3645000, 7: 10935000 }
+
 const BODY_PARTS: Record<string, { cost: number; color: string; label: string }> = {
   move: { cost: 50, color: '#a9b7c6', label: 'MOVE' },
   work: { cost: 100, color: '#ffe56d', label: 'WORK' },
@@ -158,6 +161,25 @@ const BODY_PARTS: Record<string, { cost: number; color: string; label: string }>
   claim: { cost: 600, color: '#b99cfb', label: 'CLAIM' },
   tough: { cost: 10, color: '#ffffff', label: 'TOUGH' },
 }
+
+const CONSTRUCTABLE_STRUCTURES: Array<{ type: string; label: string; level: number }> = [
+  { type: 'road', label: 'Road', level: 1 },
+  { type: 'spawn', label: 'Spawn', level: 1 },
+  { type: 'rampart', label: 'Rampart', level: 1 },
+  { type: 'constructedWall', label: 'Constructed Wall', level: 1 },
+  { type: 'extension', label: 'Extension', level: 2 },
+  { type: 'container', label: 'Container', level: 2 },
+  { type: 'tower', label: 'Tower', level: 3 },
+  { type: 'storage', label: 'Storage', level: 4 },
+  { type: 'link', label: 'Link', level: 5 },
+  { type: 'terminal', label: 'Terminal', level: 6 },
+  { type: 'lab', label: 'Lab', level: 6 },
+  { type: 'extractor', label: 'Extractor', level: 6 },
+  { type: 'factory', label: 'Factory', level: 7 },
+  { type: 'observer', label: 'Observer', level: 8 },
+  { type: 'powerSpawn', label: 'Power Spawn', level: 8 },
+  { type: 'nuker', label: 'Nuker', level: 8 },
+]
 
 const DEFAULT_MODULES: Record<string, string> = {
   main: `const spawnManager = require('spawn.manager')
@@ -375,6 +397,87 @@ function indexRoomState(snapshot: RoomSnapshot): Record<string, RoomObject> {
   return indexObjects([...(snapshot.objects ?? []), ...flagObjects(snapshot.flags)])
 }
 
+function objectSelectionPriority(object: RoomObject): number {
+  switch (object.type) {
+    case 'constructionSite': return 0
+    case 'flag': return 1
+    case 'spawn':
+    case 'extension':
+    case 'tower':
+    case 'storage':
+    case 'terminal':
+    case 'lab':
+    case 'link':
+    case 'factory':
+    case 'road':
+    case 'rampart':
+    case 'constructedWall':
+    case 'container':
+    case 'observer':
+    case 'extractor':
+    case 'nuker':
+    case 'powerSpawn':
+      return 2
+    case 'controller':
+    case 'source':
+    case 'mineral':
+    case 'deposit':
+      return 3
+    case 'creep':
+    case 'powerCreep':
+      return 9
+    default:
+      return 5
+  }
+}
+
+function pickObjectAtTile(
+  objects: Record<string, RoomObject>,
+  x: number,
+  y: number,
+  selectedObjectId?: string,
+): RoomObject | null {
+  const matches = Object.values(objects)
+    .filter((object) => object.x === x && object.y === y)
+    .sort((a, b) => {
+      const byPriority = objectSelectionPriority(a) - objectSelectionPriority(b)
+      if (byPriority !== 0) return byPriority
+      return String(a._id).localeCompare(String(b._id))
+    })
+
+  if (matches.length === 0) return null
+  if (!selectedObjectId) return matches[0]
+
+  const currentIndex = matches.findIndex((object) => object._id === selectedObjectId)
+  if (currentIndex === -1) return matches[0]
+  return matches[(currentIndex + 1) % matches.length]
+}
+
+function humanizeObjectType(type: string): string {
+  switch (type) {
+    case 'constructionSite':
+      return 'Construction Site'
+    case 'powerCreep':
+      return 'Power Creep'
+    case 'constructedWall':
+      return 'Constructed Wall'
+    default:
+      return type.replace(/([a-z])([A-Z])/g, '$1 $2')
+  }
+}
+
+function humanizeStructureType(type: string): string {
+  const entry = CONSTRUCTABLE_STRUCTURES.find((item) => item.type === type)
+  if (entry) return entry.label
+  return humanizeObjectType(type)
+}
+
+function canConstructStructure(type: string, rcl: number | null | undefined): boolean {
+  const entry = CONSTRUCTABLE_STRUCTURES.find((item) => item.type === type)
+  if (!entry) return false
+  return (rcl ?? 0) >= entry.level
+}
+
 function reportIgnoredError(error: unknown): void {
   void error
 }
@@ -408,11 +511,6 @@ function branchRoleLabel(branch: BranchInfo): string {
   return 'branch'
 }
 
-
-function formatTicksPerSecond(tickDurationMs: number): string {
-  const tps = 1000 / tickDurationMs
-  return Number.isInteger(tps) ? `${tps}` : tps.toFixed(1)
-}
 
 async function readResponse<T>(response: Response): Promise<T> {
   const contentType = response.headers.get('content-type') ?? ''
@@ -529,8 +627,6 @@ export default function App() {
   const [user, setUser] = useState<ScreepsUser | null>(null)
   const [worldStatus, setWorldStatus] = useState('disconnected')
   const [worldSize, setWorldSize] = useState<{ width: number; height: number } | null>(null)
-  const [serverPaused, setServerPaused] = useState(false)
-  const [serverTickDuration, setServerTickDuration] = useState(1000)
   const [branches, setBranches] = useState<BranchInfo[]>([])
   const [userRooms, setUserRooms] = useState<string[]>([])
   const [roomName, setRoomName] = useState(DEFAULT_ROOM)
@@ -551,12 +647,16 @@ export default function App() {
   const [spawnName, setSpawnName] = useState('Spawn1')
   const [busy, setBusy] = useState(false)
   const [socketState, setSocketState] = useState('offline')
+  const [socketReconnectKey, setSocketReconnectKey] = useState(0)
   const [authError, setAuthError] = useState('')
   const [dockTab, setDockTab] = useState<DockTab>('script')
   const [dockHeight, setDockHeight] = useState(380)
   const [leftWidth, setLeftWidth] = useState(200)
   const [rightWidth, setRightWidth] = useState(210)
   const [toolMode, setToolMode] = useState<ToolMode>('none')
+  const [showConstructMenu, setShowConstructMenu] = useState(false)
+  const [showFlagMenu, setShowFlagMenu] = useState(false)
+  const [showCreepMenu, setShowCreepMenu] = useState(false)
   const [selectedObject, setSelectedObject] = useState<RoomObject | null>(null)
   const [memoryWatchPath, setMemoryWatchPath] = useState('')
   const [memoryLiveValue, setMemoryLiveValue] = useState<string | null>(null)
@@ -567,7 +667,9 @@ export default function App() {
   const [buildStructureType, setBuildStructureType] = useState('extension')
   const [memoryNavigatePath, setMemoryNavigatePath] = useState<string | null>(null)
   const [inspectedObjectData, setInspectedObjectData] = useState<RoomObject | null>(null)
+  const [cloneSourceBranch, setCloneSourceBranch] = useState('default')
   const [newBranchName, setNewBranchName] = useState('')
+  const [newModuleName, setNewModuleName] = useState('')
 
   const isDraggingDock = useRef(false); const dragStartY = useRef(0); const dragStartHeight = useRef(0)
   const isDraggingLeft = useRef(false); const isDraggingRight = useRef(false); const dragStartX = useRef(0); const dragStartWidth = useRef(0)
@@ -577,6 +679,8 @@ export default function App() {
   const lastGameTimeRef = useRef<number | null>(null); const lastTickTimeRef = useRef<number | null>(null)
   const authVersionRef = useRef(0)
   const autoLoadedRoomRef = useRef(false)
+  const reconnectCountRef = useRef(0)
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const rotateToken = useCallback((nextToken: string | null) => {
     if (!nextToken) return
@@ -733,6 +837,7 @@ export default function App() {
   const bootstrapSession = useCallback(async () => {
     const u = normalizeUsername(loginName)
     if (!u || !userPassword) { setAuthError('Required'); return }
+    if (isRegistering && confirmPassword !== userPassword) { setAuthError('Passwords do not match'); return }
     setBusy(true); setAuthError('')
     try {
       const ep = isRegistering ? '/api/auth/register' : '/api/auth/signin'
@@ -755,8 +860,6 @@ export default function App() {
 
   useEffect(() => {
     void apiFetch<{ width: number; height: number }>('/api/game/world-size').then((s) => setWorldSize(s)).catch(() => { })
-    void apiFetch<{ tickDuration: number; paused: boolean }>('/api/game/tick-config').then((c) => { setServerPaused(c.paused); if (typeof c.tickDuration === 'number') setServerTickDuration(c.tickDuration) }).catch(() => { })
-    void apiFetch<{ tick: number }>('/api/game/tick').then((t) => { if (typeof t.tick === 'number') setGameTime(t.tick) }).catch(() => { })
   }, [apiFetch])
 
   useEffect(() => {
@@ -796,7 +899,7 @@ export default function App() {
     socket.onmessage = (ev) => {
       if (socketRef.current !== socket || socketAuthVersion !== authVersionRef.current) return
       const msg = String(ev.data)
-      if (msg.startsWith('auth ok ')) { rotateToken(msg.slice(8)); setSocketState('live'); socket.send(`subscribe room:${roomName}`); if (userRef.current) { ['console', 'cpu', 'resources', 'code'].forEach(s => socket.send(`subscribe user:${userRef.current!._id}/${s}`)); if (memoryWatchPathRef.current) socket.send(`subscribe user:${userRef.current!._id}/memory/${memoryWatchPathRef.current}`) }; return }
+      if (msg.startsWith('auth ok ')) { reconnectCountRef.current = 0; rotateToken(msg.slice(8)); setSocketState('live'); socket.send(`subscribe room:${roomName}`); if (userRef.current) { ['console', 'cpu', 'resources', 'code'].forEach(s => socket.send(`subscribe user:${userRef.current!._id}/${s}`)); if (memoryWatchPathRef.current) socket.send(`subscribe user:${userRef.current!._id}/memory/${memoryWatchPathRef.current}`) }; return }
       if (msg.startsWith('auth failed')) { storeToken(''); setSocketState('auth failed'); return }
       if (!msg.startsWith('[')) return
       const [ch, d] = JSON.parse(msg) as [string, SocketPayload]
@@ -830,11 +933,37 @@ export default function App() {
       else if (ch.includes('/resources')) { const payload = d as ResourceSocketPayload; if (payload.credits != null) setCredits(payload.credits) }
       else if (ch.includes('/memory/')) { const payload = d as MemorySocketPayload; const raw = String(payload.data ?? ''); if (raw.startsWith('gz:')) void decompressGz(raw.slice(3)).then(setMemoryLiveValue); else setMemoryLiveValue(raw) }
     }
-    socket.onclose = () => { if (socketRef.current === socket) setSocketState('offline') }
-    return () => { socket.close(); socketRef.current = null }
-  }, [roomName, user?._id, rotateToken])
+    socket.onclose = () => {
+      if (socketRef.current !== socket) return
+      setSocketState('offline')
+      // Auto-reconnect unless signed out or auth failed
+      if (authVersionRef.current === socketAuthVersion && tokenRef.current) {
+        const delay = Math.min(30000, 1000 * Math.pow(2, reconnectCountRef.current))
+        reconnectCountRef.current++
+        reconnectTimerRef.current = setTimeout(() => setSocketReconnectKey(k => k + 1), delay)
+      }
+    }
+    return () => {
+      socket.close()
+      socketRef.current = null
+      if (reconnectTimerRef.current) { clearTimeout(reconnectTimerRef.current); reconnectTimerRef.current = null }
+    }
+  }, [roomName, user?._id, rotateToken, socketReconnectKey])
 
   async function handleSaveCode() { setBusy(true); try { await apiFetch('/api/user/code', { method: 'POST', body: JSON.stringify({ branch: editingBranch, modules }) }) } catch (error) { reportIgnoredError(error) } finally { setBusy(false) } }
+  function handleCreateModule() {
+    const nextName = newModuleName.trim().replace(/\.js$/i, '')
+    if (!nextName) return
+    if (!/^[A-Za-z0-9_.-]+$/.test(nextName)) return
+    if (modules[nextName] != null) {
+      setActiveModule(nextName)
+      setNewModuleName('')
+      return
+    }
+    setModules((prev) => ({ ...prev, [nextName]: '' }))
+    setActiveModule(nextName)
+    setNewModuleName('')
+  }
   async function handleConsoleExpression(expr: string) { try { await apiFetch('/api/user/console', { method: 'POST', body: JSON.stringify({ expression: expr }) }) } catch (error) { reportIgnoredError(error) } }
   async function handleMemoryFetch(path?: string): Promise<string> {
     const res = await apiFetch<{ data: string }>(`/api/user/memory${path ? `?path=${encodeURIComponent(path)}` : ''}`)
@@ -845,19 +974,10 @@ export default function App() {
   function handleMemoryUnwatch() { if (userRef.current && memoryWatchPathRef.current) socketRef.current?.send(`unsubscribe user:${userRef.current._id}/memory/${memoryWatchPathRef.current}`); memoryWatchPathRef.current = ''; setMemoryWatchPath(''); setMemoryLiveValue(null) }
   async function handleMemoryFetchSegment(seg: number) { return (await apiFetch<{ data: string }>(`/api/user/memory-segment?segment=${seg}`)).data ?? '' }
   async function handleMemorySaveSegment(seg: number, data: string) { await apiFetch('/api/user/memory-segment', { method: 'POST', body: JSON.stringify({ segment: seg, data }) }) }
-  async function syncTickConfig() {
-    const next = await apiFetch<{ tickDuration: number; paused: boolean }>('/api/game/tick-config')
-    setServerPaused(next.paused)
-    if (typeof next.tickDuration === 'number') setServerTickDuration(next.tickDuration)
-  }
-  async function updateTickConfig(patch: { paused?: boolean; tickDuration?: number }) {
-    await apiFetch('/api/game/tick-config', { method: 'POST', body: JSON.stringify(patch) })
-    await syncTickConfig()
-  }
   async function handleCloneBranch() {
     const nextName = newBranchName.trim()
     if (!nextName) return
-    await apiFetch('/api/user/clone-branch', { method: 'POST', body: JSON.stringify({ branch: editingBranch, newName: nextName }) })
+    await apiFetch('/api/user/clone-branch', { method: 'POST', body: JSON.stringify({ branch: cloneSourceBranch, newName: nextName }) })
     setNewBranchName('')
     await refreshProfile()
     handleBranchChange(nextName)
@@ -883,10 +1003,10 @@ export default function App() {
     await fetchRoomSnapshot(roomName)
   }
   async function handleRemoveObject(obj: RoomObject) {
-    // Use console command to remove the object (works on all server implementations)
+    const safeId = obj._id.replace(/\\/g, '\\\\').replace(/'/g, "\\'")
     await apiFetch('/api/user/console', {
       method: 'POST',
-      body: JSON.stringify({ expression: `Game.getObjectById('${obj._id}')?.remove?.()` }),
+      body: JSON.stringify({ expression: `Game.getObjectById('${safeId}')?.remove?.()` }),
     })
     // Optimistically remove from local state
     setObjects((cur) => {
@@ -943,12 +1063,14 @@ export default function App() {
   }
   function handleBranchChange(nextBranch: string) {
     const branch = branches.find((item) => item.branch === nextBranch)
+    setCloneSourceBranch(nextBranch)
     applyBranchModules(branch)
   }
 
   const roomObjectList = Object.values(objects)
   const roomController = roomObjectList.find((o) => o.type === 'controller')
   const roomOwnerId = roomController?.user ?? roomController?.reservation?.user
+  const roomRcl = roomController?.level ?? 0
   const socketIndicator = socketState === 'live' ? 'live' : socketState === 'connecting' || socketState === 'authenticating' ? 'connecting' : 'offline'
   const selectedBranch = branches.find((branch) => branch.branch === editingBranch)
   const moduleNames = Object.keys(modules)
@@ -958,6 +1080,12 @@ export default function App() {
     acc[cell] += 1
     return acc
   }, { plain: 0, swamp: 0, wall: 0 } as Record<TerrainCell, number>)
+
+  useEffect(() => {
+    if (!branches.length) return
+    if (branches.some((branch) => branch.branch === cloneSourceBranch)) return
+    setCloneSourceBranch(editingBranch || branches[0].branch)
+  }, [branches, cloneSourceBranch, editingBranch])
 
   if (!user) return (
     <div className="login-page"><div className="login-card"><div className="login-logo">Screeps</div><form className="stack" onSubmit={(e) => { e.preventDefault(); void bootstrapSession() }}>
@@ -1025,22 +1153,104 @@ export default function App() {
             <div className={`hud-chip ${socketIndicator === 'live' ? 'is-live' : ''}`}><span>socket</span><strong>{socketState}</strong></div>
           </div>
           <div className="world-toolbar">
-            <button className={`toolbar-btn ${toolMode === 'none' ? 'active' : ''}`} onClick={() => setToolMode('none')}>Inspect</button>
-            <button className={`toolbar-btn ${toolMode === 'spawn' ? 'active' : ''}`} onClick={() => setToolMode('spawn')} disabled={!token || busy || worldStatus === 'normal' || !!roomOwnerId}>Place Spawn</button>
-            <button className={`toolbar-btn ${toolMode === 'build' ? 'active' : ''}`} onClick={() => setToolMode(toolMode === 'build' ? 'none' : 'build')}>Build</button>
-            <button className={`toolbar-btn ${toolMode === 'flag' ? 'active' : ''}`} onClick={() => setToolMode(toolMode === 'flag' ? 'none' : 'flag')}>Flag</button>
-            <button className={`toolbar-btn ${toolMode === 'creep' ? 'active' : ''}`} onClick={() => setToolMode('creep')}>Creep Planner</button>
-            <button className="toolbar-btn" onClick={() => setShowWorldMap(true)}>World Map</button>
+            <button className={`toolbar-btn ${toolMode === 'none' ? 'active' : ''}`} onClick={() => { setToolMode('none'); setShowConstructMenu(false); setShowFlagMenu(false); setShowCreepMenu(false) }}>Inspect</button>
+            <button className={`toolbar-btn ${toolMode === 'spawn' ? 'active' : ''}`} onClick={() => { setShowConstructMenu(false); setShowFlagMenu(false); setShowCreepMenu(false); setToolMode('spawn') }} disabled={!token || busy || worldStatus === 'normal' || !!roomOwnerId}>Place Spawn</button>
+            <div className="toolbar-group">
+              <button
+                className={`toolbar-btn ${toolMode === 'build' ? 'active' : ''} ${showConstructMenu ? 'open' : ''}`}
+                onClick={() => {
+                  setShowFlagMenu(false)
+                  setShowCreepMenu(false)
+                  setToolMode('build')
+                  setShowConstructMenu((open) => !open)
+                }}
+              >
+                Construct · {humanizeStructureType(buildStructureType)}
+              </button>
+              {showConstructMenu && (
+                <div className="construct-menu">
+                  {CONSTRUCTABLE_STRUCTURES.map((item) => {
+                    const available = canConstructStructure(item.type, roomRcl)
+                    const active = buildStructureType === item.type
+                    return (
+                      <button
+                        key={item.type}
+                        className={`construct-item ${available ? '' : 'is-disabled'} ${active ? 'active' : ''}`}
+                        disabled={!available}
+                        onClick={() => {
+                          if (!available) return
+                          setBuildStructureType(item.type)
+                          setToolMode('build')
+                          setShowConstructMenu(false)
+                        }}
+                      >
+                        <span className="construct-label">{item.label}</span>
+                        <span className="construct-meta">RCL {item.level}</span>
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+            <div className="toolbar-group">
+              <button
+                className={`toolbar-btn ${toolMode === 'flag' ? 'active' : ''} ${showFlagMenu ? 'open' : ''}`}
+                onClick={() => {
+                  setShowConstructMenu(false)
+                  setShowCreepMenu(false)
+                  setToolMode((mode) => (mode === 'flag' ? 'none' : 'flag'))
+                  setShowFlagMenu((open) => !open)
+                }}
+              >
+                Flag
+              </button>
+              {showFlagMenu && (
+                <div className="construct-menu">
+                  <div className="stack">
+                    <input value={flagDraft.name} onChange={(e) => setFlagDraft((draft) => ({ ...draft, name: e.target.value }))} placeholder="Flag name" />
+                    <div style={{ display: 'flex', gap: 4 }}>
+                      <select className="server-select" style={{ flex: 1, width: 'auto' }} value={flagDraft.color} onChange={(e) => setFlagDraft((draft) => ({ ...draft, color: Number(e.target.value) }))}>
+                        {Array.from({ length: 10 }, (_, index) => index + 1).map((value) => <option key={value} value={value}>Primary {value}</option>)}
+                      </select>
+                      <select className="server-select" style={{ flex: 1, width: 'auto' }} value={flagDraft.secondaryColor} onChange={(e) => setFlagDraft((draft) => ({ ...draft, secondaryColor: Number(e.target.value) }))}>
+                        {Array.from({ length: 10 }, (_, index) => index + 1).map((value) => <option key={value} value={value}>Secondary {value}</option>)}
+                      </select>
+                    </div>
+                    <div className="muted">Click a tile to place a flag.</div>
+                  </div>
+                </div>
+              )}
+            </div>
+            <div className="toolbar-group">
+              <button
+                className={`toolbar-btn ${toolMode === 'creep' ? 'active' : ''} ${showCreepMenu ? 'open' : ''}`}
+                onClick={() => {
+                  setShowConstructMenu(false)
+                  setShowFlagMenu(false)
+                  setToolMode((mode) => (mode === 'creep' ? 'none' : 'creep'))
+                  setShowCreepMenu((open) => !open)
+                }}
+              >
+                Creep Planner
+              </button>
+              {showCreepMenu && (
+                <div className="construct-menu">
+                  <SpawnCalculator />
+                </div>
+              )}
+            </div>
+            <button className="toolbar-btn" onClick={() => { setShowConstructMenu(false); setShowFlagMenu(false); setShowCreepMenu(false); setShowWorldMap(true) }}>World Map</button>
           </div>
           {spawnConfirm && <SpawnConfirmDialog x={spawnConfirm.x} y={spawnConfirm.y} defaultName={spawnName} onConfirm={(n) => { setSpawnName(n); setSpawnConfirm(null); setBusy(true); apiFetch<{ name: string }>('/api/game/gen-unique-object-name', { method: 'POST', body: JSON.stringify({ type: 'spawn' }) }).then(gen => apiFetch('/api/game/place-spawn', { method: 'POST', body: JSON.stringify({ room: roomName, x: spawnConfirm.x, y: spawnConfirm.y, name: n.trim() || gen.name }) })).then(() => { fetchRoomSnapshot(roomName); refreshProfile() }).finally(() => setBusy(false)) }} onCancel={() => setSpawnConfirm(null)} />}
-          <RoomRenderer terrain={terrain} objects={objects} roomUsers={roomUsers} roomName={roomName} userId={user?._id} tickDuration={tickDuration ?? serverTickDuration} selectedObjectId={selectedObject?._id} onTileClick={(x, y) => {
+          <RoomRenderer terrain={terrain} objects={objects} roomUsers={roomUsers} roomName={roomName} userId={user?._id} tickDuration={tickDuration ?? 1000} selectedObjectId={selectedObject?._id} onTileClick={(x, y) => {
             if (toolMode === 'spawn') {
-              setBusy(true); apiFetch<{ name: string }>('/api/game/gen-unique-object-name', { method: 'POST', body: JSON.stringify({ type: 'spawn' }) }).then(gen => apiFetch('/api/game/place-spawn', { method: 'POST', body: JSON.stringify({ room: roomName, x, y, name: spawnName.trim() || gen.name }) })).then(() => { setToolMode('none'); fetchRoomSnapshot(roomName); refreshProfile() }).finally(() => setBusy(false))
+              setToolMode('none'); setSpawnConfirm({ x, y })
             } else if (toolMode === 'build') {
+              if (!canConstructStructure(buildStructureType, roomRcl)) return
               if (!busy) { setBusy(true); void handleCreateConstruction(x, y).finally(() => setBusy(false)) }
             } else if (toolMode === 'flag') {
               if (!busy) { setBusy(true); void handleCreateFlag(x, y).finally(() => setBusy(false)) }
-            } else if (!!token && !busy && worldStatus !== 'normal' && !roomOwnerId) setSpawnConfirm({ x, y }); else setSelectedObject(Object.values(objects).find((o) => o.x === x && o.y === y) ?? null)
+            } else if (!!token && !busy && worldStatus !== 'normal' && !roomOwnerId) setSpawnConfirm({ x, y }); else setSelectedObject(pickObjectAtTile(objects, x, y, selectedObject?._id))
           }} />
         </main>
 
@@ -1048,16 +1258,6 @@ export default function App() {
           <div className="rail-resize-handle rail-resize-left" onMouseDown={(e) => { isDraggingRight.current = true; dragStartX.current = e.clientX; dragStartWidth.current = rightWidth; e.preventDefault() }} />
           <div className="flat-panel"><div className="flat-title">Server</div><div className="info-row"><span>ws</span><strong style={{ color: socketIndicator === 'live' ? '#7dc97d' : '#e0bf63' }}>{socketState}</strong></div>
             <div className="info-row"><span>world</span><strong>{worldStatusLabel(worldStatus)}</strong></div>
-            <div className="info-row"><span>tick/s</span><strong>{formatTicksPerSecond(serverTickDuration)}</strong></div>
-            <div className="server-controls">
-              <button className="btn-ghost compact" style={{ flex: 1 }} onClick={() => void updateTickConfig({ paused: !serverPaused })}>{serverPaused ? 'Resume' : 'Pause'}</button>
-              <select className="server-select" value={serverTickDuration} onChange={(e) => void updateTickConfig({ tickDuration: Number(e.target.value) })}>
-                {[1, 2, 3, 4, 5].map((tps) => {
-                  const ms = Math.round(1000 / tps)
-                  return <option key={tps} value={ms}>{tps} tick/s</option>
-                })}
-              </select>
-            </div>
             {(worldStatus === 'normal' || worldStatus === 'lost') && (
               <button className="btn-ghost compact" style={{ marginTop: 6, width: '100%' }} onClick={() => void handleRespawn()}>
                 Respawn
@@ -1069,50 +1269,71 @@ export default function App() {
             <div className="info-row"><span>swamp</span><strong>{terrainStats.swamp}</strong></div>
             <div className="info-row"><span>walls</span><strong>{terrainStats.wall}</strong></div>
           </div>
-          <div className="flat-panel"><div className="flat-title">Tools</div><div className="tool-tabs">{(['spawn', 'build', 'flag', 'creep'] as ToolMode[]).map(m => <button key={m} className={`tool-tab ${toolMode === m ? 'active' : ''}`} onClick={() => setToolMode(m)}>{m[0].toUpperCase()}</button>)}</div>
-            {toolMode === 'build' && (
-              <div className="stack" style={{ marginTop: 8 }}>
-                <select className="server-select" style={{ width: '100%' }} value={buildStructureType} onChange={(e) => setBuildStructureType(e.target.value)}>
-                  {['extension', 'road', 'tower', 'storage', 'container', 'rampart', 'constructedWall', 'link', 'terminal', 'lab', 'factory'].map((type) => (
-                    <option key={type} value={type}>{type}</option>
-                  ))}
-                </select>
-                <div className="muted">Click a tile to place a construction site.</div>
+          {selectedObject && <div className="flat-panel"><div className="flat-title">{humanizeObjectType(selectedObject.type)}{selectedObject.name ? ` · ${selectedObject.name}` : ''} <span onClick={() => setSelectedObject(null)} style={{ float: 'right', cursor: 'pointer' }}>✕</span></div>
+            <details className="inspect-drop inspect-drop-large" open>
+              <summary className="inspect-drop-summary">Details</summary>
+              <div className="inspect-drop-body">
+                <div className="info-row"><span>type</span><strong>{selectedObject.type}</strong></div>
+                {selectedObject.name && <div className="info-row"><span>name</span><strong>{selectedObject.name}</strong></div>}
+                {selectedObject.level != null && <div className="info-row"><span>level</span><strong>{selectedObject.level}</strong></div>}
+                {selectedObject.hits != null && selectedObject.hitsMax != null && <div className="info-row"><span>hits</span><strong>{selectedObject.hits}/{selectedObject.hitsMax}</strong></div>}
+                {selectedObject.store && Object.keys(selectedObject.store).length > 0 && <div className="info-row"><span>store</span><strong>{Object.entries(selectedObject.store).map(([k, v]) => `${k}: ${v}`).join(', ')}</strong></div>}
+                <div className="info-row"><span>id</span><strong>{selectedObject._id}</strong></div>
+                <div className="info-row"><span>owner</span><strong>{roomUsers[selectedObject.user ?? '']?.username ?? selectedObject.user ?? 'unknown'}</strong></div>
+                <div className="info-row"><span>position</span><strong>{selectedObject.x ?? '—'}, {selectedObject.y ?? '—'}</strong></div>
+                {selectedObject.structureType && <div className="info-row"><span>structure</span><strong>{selectedObject.structureType}</strong></div>}
+                {selectedObject.type === 'controller' && (() => {
+                  const lvl = selectedObject.level ?? 0
+                  const total = CONTROLLER_LEVELS[lvl]
+                  const prog = selectedObject.progress ?? 0
+                  if (lvl === 8) return <div className="info-row"><span>upgrade</span><strong style={{ color: '#bfdc82' }}>max level</strong></div>
+                  if (!total) return null
+                  const pct = Math.round((prog / total) * 100)
+                  return (
+                    <div style={{ padding: '3px 0' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.65rem', marginBottom: 2 }}>
+                        <span className="muted">{prog.toLocaleString()} / {total.toLocaleString()}</span>
+                        <span>{pct}%</span>
+                      </div>
+                      <div className="obj-hp-wrap" style={{ height: 3 }}>
+                        <div className="obj-hp-bar" style={{ width: `${pct}%`, background: '#a78bfa' }} />
+                      </div>
+                    </div>
+                  )
+                })()}
+                {selectedObject.type === 'controller' && selectedObject.downgradeTime != null && gameTime != null && (
+                  <div className="info-row"><span>downgrade in</span><strong style={{ color: selectedObject.downgradeTime - gameTime < 5000 ? '#e0bf63' : undefined }}>{(selectedObject.downgradeTime - gameTime).toLocaleString()} ticks</strong></div>
+                )}
+                {selectedObject.type === 'controller' && selectedObject.safeMode != null && selectedObject.safeMode > 0 && (
+                  <div className="info-row"><span>safe mode</span><strong style={{ color: '#7dc97d' }}>{selectedObject.safeMode.toLocaleString()} ticks</strong></div>
+                )}
+                {selectedObject.type === 'controller' && selectedObject.safeModeAvailable != null && (
+                  <div className="info-row"><span>safe modes</span><strong>{selectedObject.safeModeAvailable}</strong></div>
+                )}
+                {selectedObject.type === 'constructionSite' && (
+                  <div className="info-row"><span>process</span><strong>{selectedObject.progress != null && selectedObject.progressTotal != null ? `${selectedObject.progress}/${selectedObject.progressTotal}` : 'pending'}</strong></div>
+                )}
+                {selectedObject.type === 'constructionSite' && selectedObject.progress != null && selectedObject.progressTotal != null && selectedObject.progressTotal > 0 && (
+                  <div style={{ padding: '3px 0 6px' }}>
+                    <div className="obj-hp-wrap" style={{ height: 3 }}>
+                      <div className="obj-hp-bar" style={{ width: `${Math.round((selectedObject.progress / selectedObject.progressTotal) * 100)}%`, background: '#7fb3f0' }} />
+                    </div>
+                  </div>
+                )}
+                {selectedObject.type === 'flag' && (
+                  <>
+                    <button className="btn-ghost compact" style={{ marginTop: 6, width: '100%' }} onClick={() => void handleChangeFlagColor(selectedObject)}>Apply Tool Colors</button>
+                    <button className="btn-ghost compact" style={{ marginTop: 4, width: '100%' }} onClick={() => void handleRemoveFlag(selectedObject)}>Remove Flag</button>
+                  </>
+                )}
+                {selectedObject.type !== 'flag' && (
+                  <button className="btn-ghost compact" style={{ marginTop: 4, width: '100%', color: 'var(--accent-danger)' }} onClick={() => void handleRemoveObject(selectedObject)}>
+                    {selectedObject.type === 'constructionSite' ? 'Remove Site' : 'Remove Object'}
+                  </button>
+                )}
+                <button className="btn-ghost compact" style={{ marginTop: 6, width: '100%' }} onClick={() => { setInspectedObjectData(selectedObject); setMemoryNavigatePath(getMemoryPath(selectedObject)); setDockTab('memory') }}>Memory</button>
               </div>
-            )}
-            {toolMode === 'flag' && (
-              <div className="stack" style={{ marginTop: 8 }}>
-                <input value={flagDraft.name} onChange={(e) => setFlagDraft((draft) => ({ ...draft, name: e.target.value }))} placeholder="Flag name" />
-                <div style={{ display: 'flex', gap: 4 }}>
-                  <select className="server-select" style={{ flex: 1, width: 'auto' }} value={flagDraft.color} onChange={(e) => setFlagDraft((draft) => ({ ...draft, color: Number(e.target.value) }))}>
-                    {Array.from({ length: 10 }, (_, index) => index + 1).map((value) => <option key={value} value={value}>Primary {value}</option>)}
-                  </select>
-                  <select className="server-select" style={{ flex: 1, width: 'auto' }} value={flagDraft.secondaryColor} onChange={(e) => setFlagDraft((draft) => ({ ...draft, secondaryColor: Number(e.target.value) }))}>
-                    {Array.from({ length: 10 }, (_, index) => index + 1).map((value) => <option key={value} value={value}>Secondary {value}</option>)}
-                  </select>
-                </div>
-                <div className="muted">Click a tile to place a flag.</div>
-              </div>
-            )}
-            {toolMode === 'creep' && <SpawnCalculator />}
-          </div>
-          {selectedObject && <div className="flat-panel"><div className="flat-title">Inspector <span onClick={() => setSelectedObject(null)} style={{ float: 'right', cursor: 'pointer' }}>✕</span></div>
-            <div className="info-row"><span>type</span><strong>{selectedObject.type}</strong></div>
-            {selectedObject.name && <div className="info-row"><span>name</span><strong>{selectedObject.name}</strong></div>}
-            {selectedObject.level != null && <div className="info-row"><span>level</span><strong>{selectedObject.level}</strong></div>}
-            {selectedObject.hits != null && selectedObject.hitsMax != null && <div className="info-row"><span>hits</span><strong>{selectedObject.hits}/{selectedObject.hitsMax}</strong></div>}
-            {selectedObject.progress != null && selectedObject.progressTotal != null && <div className="info-row"><span>progress</span><strong>{selectedObject.progress}/{selectedObject.progressTotal}</strong></div>}
-            {selectedObject.store && Object.keys(selectedObject.store).length > 0 && <div className="info-row"><span>store</span><strong>{Object.entries(selectedObject.store).map(([k, v]) => `${k}: ${v}`).join(', ')}</strong></div>}
-            {selectedObject.type === 'flag' && (
-              <>
-                <button className="btn-ghost compact" style={{ marginTop: 6, width: '100%' }} onClick={() => void handleChangeFlagColor(selectedObject)}>Apply Tool Colors</button>
-                <button className="btn-ghost compact" style={{ marginTop: 4, width: '100%' }} onClick={() => void handleRemoveFlag(selectedObject)}>Remove Flag</button>
-              </>
-            )}
-            {selectedObject.type === 'constructionSite' && (
-              <button className="btn-ghost compact" style={{ marginTop: 6, width: '100%', color: 'var(--accent-danger)' }} onClick={() => void handleRemoveObject(selectedObject)}>Remove Site</button>
-            )}
-            <button className="btn-ghost compact" style={{ marginTop: 6, width: '100%' }} onClick={() => { setInspectedObjectData(selectedObject); setMemoryNavigatePath(getMemoryPath(selectedObject)); setDockTab('memory') }}>Memory</button>
+            </details>
           </div>}
           {cpuHistory.length > 0 && <div className="flat-panel"><div className="flat-title">CPU</div><CpuChart data={cpuHistory} cpuLimit={user?.cpu} /></div>}
         </aside>
@@ -1141,6 +1362,25 @@ export default function App() {
                       ))}
                     </select>
                   </label>
+                  <div className="script-clone-controls">
+                    <label className="script-select-wrap">
+                      <span>Clone From</span>
+                      <select value={cloneSourceBranch} onChange={(e) => setCloneSourceBranch(e.target.value)}>
+                        {branches.map((branch) => (
+                          <option key={branch.branch} value={branch.branch}>{branch.branch}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <input
+                      className="script-clone-input"
+                      value={newBranchName}
+                      onChange={(e) => setNewBranchName(e.target.value)}
+                      placeholder="New branch name…"
+                    />
+                    <button className="btn-ghost compact" onClick={() => void handleCloneBranch()} disabled={!newBranchName.trim()}>
+                      Clone Branch
+                    </button>
+                  </div>
                   <div className="script-module-pill">{activeModule}.js</div>
                   <button className="btn-ghost compact" onClick={() => void handleSetActiveBranch('activeWorld')} disabled={selectedBranch?.activeWorld}>Set World</button>
                   <button className="btn-ghost compact" onClick={() => void handleSetActiveBranch('activeSim')} disabled={selectedBranch?.activeSim}>Set Sim</button>
@@ -1157,8 +1397,17 @@ export default function App() {
                     </button>
                   ))}
                   <div className="module-add-input">
-                    <input value={newBranchName} onChange={(e) => setNewBranchName(e.target.value)} placeholder="Clone branch as…" />
-                    <button className="btn-ghost compact" style={{ marginTop: 6, width: '100%' }} onClick={() => void handleCloneBranch()} disabled={!newBranchName.trim()}>Clone Branch</button>
+                    <input
+                      value={newModuleName}
+                      onChange={(e) => setNewModuleName(e.target.value)}
+                      placeholder="New file name…"
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') handleCreateModule()
+                      }}
+                    />
+                    <button className="btn-ghost compact" style={{ marginTop: 6, width: '100%' }} onClick={handleCreateModule} disabled={!newModuleName.trim()}>
+                      New File
+                    </button>
                   </div>
                 </div>
                 <div className="script-editor">
@@ -1169,6 +1418,17 @@ export default function App() {
                     theme="vs-dark"
                     value={modules[activeModule] ?? ''}
                     onChange={(value) => setModules((p) => ({ ...p, [activeModule]: value ?? '' }))}
+                    beforeMount={(monacoInstance: Monaco) => {
+                      monacoInstance.languages.typescript.javascriptDefaults.addExtraLib(
+                        screepsTypes,
+                        'file:///node_modules/@types/screeps/index.d.ts'
+                      )
+                      monacoInstance.languages.typescript.javascriptDefaults.setCompilerOptions({
+                        target: monacoInstance.languages.typescript.ScriptTarget.ES2020,
+                        allowNonTsExtensions: true,
+                        checkJs: true,
+                      })
+                    }}
                     options={{
                       automaticLayout: true,
                       minimap: { enabled: false },

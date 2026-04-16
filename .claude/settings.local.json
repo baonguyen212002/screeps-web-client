@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -o 'user:$[^'\\\\''\"]*\\\\|room:$[^'\\\\''\"]*\\\\|[a-z]*:[a-z$_/]*')",
+      "Bash(npm run:*)",
+      "Bash(find:*)",
+      "Bash(curl -s 'http://localhost:21025/api/user/code?branch=default' -H 'X-Token: 5ca7828c99574ccecb3366d0c616810d392f9d66' -H 'X-Username: shino')",
+      "Bash(curl -s http://localhost:21025/api/user/me -H 'X-Token: 5ca7828c99574ccecb3366d0c616810d392f9d66')",
+      "Bash(curl -s 'http://localhost:21025/api/game/room-objects?room=W3N5' -H 'X-Token: 5ca7828c99574ccecb3366d0c616810d392f9d66' -H 'X-Username: shino')",
+      "Bash(python3 -c ':*)",
+      "Bash(curl:*)",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(json.dumps\\(d.get\\('scripts',{}\\), indent=2\\)\\)\")",
+      "Bash(nc -q 2 127.0.0.1 21026)",
+      "Bash(timeout 3 nc 127.0.0.1 21026)",
+      "Bash(node:*)",
+      "Bash(nc -w 3 127.0.0.1 21026)",
+      "Bash(printf 'storage.db[\"rooms.objects\"].find\\({room:\"W3N5\", type:\"spawn\"}\\)\\\\n')",
+      "Bash(nc -w 5 127.0.0.1 21026)",
+      "Bash(npx tsc:*)",
+      "Bash(awk 'NR==1533' /home/shino/screeps-web-client/src/App.tsx)",
+      "WebFetch(domain:docs.screeps.com)"
+    ]
+  }
+}

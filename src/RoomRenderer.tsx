@@ -364,6 +364,99 @@ function drawObjects(
         ctx.beginPath(); ctx.rect(-ls, -ls, ls * 2, ls * 2); ctx.fill(); ctx.stroke()
         ctx.restore(); break
       }
+      case 'lab': {
+        ctx.beginPath(); ctx.arc(cx, cy + TILE * 0.06, TILE * 0.34, 0, Math.PI * 2)
+        ctx.fillStyle = '#1c1c1c'; ctx.strokeStyle = isOwn ? '#bfdc82' : '#888'; ctx.lineWidth = 1.5
+        ctx.fill(); ctx.stroke()
+        // Flask neck
+        ctx.fillStyle = isOwn ? '#bfdc82' : '#888'
+        ctx.fillRect(cx - TILE * 0.08, cy - TILE * 0.44, TILE * 0.16, TILE * 0.22)
+        // Liquid
+        ctx.beginPath(); ctx.arc(cx, cy + TILE * 0.1, TILE * 0.18, 0, Math.PI * 2)
+        ctx.fillStyle = isOwn ? 'rgba(191,220,130,0.4)' : 'rgba(136,136,136,0.3)'; ctx.fill()
+        break
+      }
+      case 'factory': {
+        const fs2 = TILE * 0.4
+        ctx.fillStyle = '#1c1c1c'; ctx.strokeStyle = isOwn ? '#bfdc82' : '#888'; ctx.lineWidth = 2
+        ctx.beginPath(); ctx.rect(cx - fs2, cy - fs2, fs2 * 2, fs2 * 2); ctx.fill(); ctx.stroke()
+        // Gear teeth (simplified)
+        const teeth = 8; const ir = TILE * 0.16; const or2 = TILE * 0.26
+        ctx.beginPath()
+        for (let i = 0; i < teeth; i++) {
+          const a1 = (Math.PI * 2 * i) / teeth - Math.PI / teeth / 2
+          const a2 = a1 + Math.PI / teeth
+          const a3 = a2 + Math.PI / teeth / 2
+          ctx.lineTo(cx + or2 * Math.cos(a1), cy + or2 * Math.sin(a1))
+          ctx.lineTo(cx + or2 * Math.cos(a2), cy + or2 * Math.sin(a2))
+          ctx.lineTo(cx + ir * Math.cos(a3), cy + ir * Math.sin(a3))
+        }
+        ctx.closePath()
+        ctx.fillStyle = isOwn ? 'rgba(191,220,130,0.6)' : 'rgba(136,136,136,0.5)'; ctx.fill()
+        ctx.beginPath(); ctx.arc(cx, cy, TILE * 0.1, 0, Math.PI * 2)
+        ctx.fillStyle = '#1c1c1c'; ctx.fill()
+        break
+      }
+      case 'observer': {
+        ctx.beginPath(); ctx.arc(cx, cy, TILE * 0.3, 0, Math.PI * 2)
+        ctx.fillStyle = '#1c1c1c'; ctx.strokeStyle = isOwn ? '#bfdc82' : '#888'; ctx.lineWidth = 1.5
+        ctx.fill(); ctx.stroke()
+        // Eye
+        ctx.beginPath(); ctx.arc(cx, cy, TILE * 0.14, 0, Math.PI * 2)
+        ctx.fillStyle = isOwn ? 'rgba(191,220,130,0.8)' : 'rgba(136,136,136,0.7)'; ctx.fill()
+        ctx.beginPath(); ctx.arc(cx, cy, TILE * 0.06, 0, Math.PI * 2)
+        ctx.fillStyle = '#111'; ctx.fill()
+        break
+      }
+      case 'extractor': {
+        // Hexagon ring
+        ctx.beginPath()
+        for (let i = 0; i < 6; i++) {
+          const a = (Math.PI / 3) * i - Math.PI / 6
+          const r = TILE * 0.44
+          if (i === 0) ctx.moveTo(cx + r * Math.cos(a), cy + r * Math.sin(a))
+          else ctx.lineTo(cx + r * Math.cos(a), cy + r * Math.sin(a))
+        }
+        ctx.closePath()
+        ctx.strokeStyle = isOwn ? 'rgba(191,220,130,0.7)' : 'rgba(136,136,136,0.6)'; ctx.lineWidth = 2; ctx.stroke()
+        // Inner ring
+        ctx.beginPath()
+        for (let i = 0; i < 6; i++) {
+          const a = (Math.PI / 3) * i - Math.PI / 6
+          const r = TILE * 0.28
+          if (i === 0) ctx.moveTo(cx + r * Math.cos(a), cy + r * Math.sin(a))
+          else ctx.lineTo(cx + r * Math.cos(a), cy + r * Math.sin(a))
+        }
+        ctx.closePath()
+        ctx.strokeStyle = isOwn ? 'rgba(191,220,130,0.4)' : 'rgba(136,136,136,0.3)'; ctx.lineWidth = 1.5; ctx.stroke()
+        break
+      }
+      case 'nuker': {
+        // Rocket / cone shape
+        ctx.beginPath()
+        ctx.moveTo(cx, cy - TILE * 0.44)
+        ctx.lineTo(cx + TILE * 0.28, cy + TILE * 0.36)
+        ctx.lineTo(cx - TILE * 0.28, cy + TILE * 0.36)
+        ctx.closePath()
+        ctx.fillStyle = '#1c1c1c'; ctx.strokeStyle = isOwn ? '#ff6b6b' : '#888'; ctx.lineWidth = 1.5
+        ctx.fill(); ctx.stroke()
+        ctx.beginPath(); ctx.arc(cx, cy + TILE * 0.08, TILE * 0.12, 0, Math.PI * 2)
+        ctx.fillStyle = isOwn ? 'rgba(255,107,107,0.6)' : 'rgba(136,136,136,0.5)'; ctx.fill()
+        break
+      }
+      case 'powerSpawn': {
+        ctx.beginPath(); ctx.arc(cx, cy, TILE * 0.42, 0, Math.PI * 2)
+        ctx.fillStyle = '#1c1c1c'; ctx.strokeStyle = isOwn ? '#f1c40f' : '#888'; ctx.lineWidth = 2
+        ctx.fill(); ctx.stroke()
+        // Power symbol (P)
+        ctx.beginPath(); ctx.arc(cx, cy - TILE * 0.06, TILE * 0.16, 0, Math.PI * 2)
+        ctx.strokeStyle = isOwn ? '#f1c40f' : '#888'; ctx.lineWidth = 2; ctx.stroke()
+        ctx.beginPath()
+        ctx.moveTo(cx - TILE * 0.16, cy - TILE * 0.32)
+        ctx.lineTo(cx - TILE * 0.16, cy + TILE * 0.24)
+        ctx.strokeStyle = isOwn ? '#f1c40f' : '#888'; ctx.lineWidth = 2; ctx.stroke()
+        break
+      }
       case 'road': {
         // Draw lines to adjacent road tiles
         ctx.strokeStyle = '#444'
@@ -437,7 +530,6 @@ function drawObjects(
       case 'powerCreep': {
         let creepColor = isOwn ? '#c8e07a' : '#d96464'
         let borderColor = isOwn ? '#8dd08d' : '#ff8080'
-        // Color by dominant body part
         if (obj.body && obj.body.length > 0) {
           const counts: Record<string, number> = {}
           for (const p of obj.body) {

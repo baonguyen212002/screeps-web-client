@@ -118,6 +118,39 @@ button, input { font: inherit; }
 .info-row > span:first-child { color: var(--text-muted); }
 .info-row > strong { color: var(--text-main); font-weight: 500; max-width: 100px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+.inspect-drop {
+  margin-top: 8px;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 6px;
+  background: rgba(255,255,255,0.03);
+  overflow: hidden;
+}
+
+.inspect-drop-large {
+  margin-top: 10px;
+  border-color: rgba(127,179,240,0.16);
+  background: rgba(127,179,240,0.04);
+}
+
+.inspect-drop-summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 10px 12px;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  background: rgba(255,255,255,0.03);
+}
+
+.inspect-drop-summary::-webkit-details-marker {
+  display: none;
+}
+
+.inspect-drop-body {
+  padding: 10px 12px 12px;
+}
+
 /* ── Zoom buttons (inside RoomRenderer) ───────────────── */
 
 .zoom-stack {
@@ -179,6 +212,75 @@ button, input { font: inherit; }
 
 .toolbar-btn:hover { color: var(--text-main); background: rgba(255,255,255,0.08); }
 .toolbar-btn.active { color: var(--accent-hi); border-color: rgba(127,179,240,0.35); background: rgba(91,141,217,0.18); }
+.toolbar-btn.open { color: var(--accent-hi); border-color: rgba(127,179,240,0.35); background: rgba(91,141,217,0.22); }
+
+.toolbar-group {
+  position: relative;
+  display: flex;
+}
+
+.construct-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 12;
+  min-width: 240px;
+  max-width: min(360px, calc(100vw - 32px));
+  padding: 6px;
+  border-radius: 10px;
+  border: 1px solid rgba(255,255,255,0.08);
+  background: rgba(8,11,15,0.96);
+  box-shadow: 0 20px 50px rgba(0,0,0,0.45);
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 4px;
+}
+
+.construct-item {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: 7px;
+  border: 1px solid rgba(255,255,255,0.06);
+  background: rgba(255,255,255,0.04);
+  color: var(--text-main);
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, opacity 0.12s;
+}
+
+.construct-item:hover:not(:disabled) {
+  background: rgba(255,255,255,0.08);
+  border-color: rgba(127,179,240,0.26);
+}
+
+.construct-item.active {
+  background: rgba(91,141,217,0.2);
+  border-color: rgba(127,179,240,0.34);
+}
+
+.construct-item.is-disabled,
+.construct-item:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+  background: #0b0b0b;
+  border-color: rgba(255,255,255,0.03);
+  color: #6a6a6a;
+}
+
+.construct-label {
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.construct-meta {
+  font-size: 0.64rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
 
 .world-stage-hud {
   position: absolute;
@@ -317,6 +419,7 @@ button { cursor: pointer; }
 
 .muted { color: var(--text-muted); font-size: 0.78rem; }
 .form-error { color: var(--accent-danger); font-size: 0.78rem; }
+.form-success { color: #7dc97d; font-size: 0.78rem; }
 
 /* ── Login page ───────────────────────────────────────── */
 .login-page {
@@ -525,14 +628,15 @@ button { cursor: pointer; }
 
 .script-toolbar,
 .pane-header {
-  height: 28px;
+  min-height: 36px;
   background: #171717;
   border-bottom: 1px solid rgba(0,0,0,0.4);
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 10px;
+  padding: 6px 10px;
   flex-shrink: 0;
+  gap: 10px;
 }
 
 .panel-title {
@@ -569,6 +673,8 @@ button { cursor: pointer; }
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .script-select-wrap {
@@ -590,6 +696,32 @@ button { cursor: pointer; }
   border-radius: 4px;
   padding: 0 8px;
   font-size: 0.76rem;
+}
+
+.script-clone-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 6px;
+  background: rgba(255,255,255,0.03);
+}
+
+.script-clone-input {
+  width: 150px;
+  height: 24px;
+  padding: 0 8px;
+  font-size: 0.75rem;
+  background: var(--bg-input);
+  border: 1px solid rgba(255,255,255,0.12);
+  color: var(--text-main);
+  border-radius: 4px;
+}
+
+.script-clone-input:focus {
+  outline: none;
+  border-color: var(--accent);
 }
 
 .server-controls {
@@ -1420,7 +1552,6 @@ button { cursor: pointer; }
   }
 
   .script-header-controls {
-    flex-wrap: wrap;
     justify-content: flex-end;
   }
 }
@@ -1447,6 +1578,16 @@ button { cursor: pointer; }
 
   .dock-body {
     grid-template-columns: 110px minmax(0, 1fr);
+  }
+
+  .script-clone-controls {
+    width: 100%;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+  }
+
+  .script-clone-input {
+    width: 100%;
   }
 }
 
