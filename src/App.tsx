@@ -15,7 +15,9 @@ import CraftPane from './CraftPane'
 import CpuChart from './CpuChart'
 import LeaderboardPane from './LeaderboardPane'
 import BadgeEditor from './BadgeEditor'
+import BodyWheel from './BodyWheel'
 import type { LogEntry } from './ConsolePane'
+import { BODY_PARTS, BODY_PART_ORDER, countBodyParts, type BodyPartType } from './bodyParts'
 
 type ScreepsUser = {
   _id: string
@@ -150,17 +152,6 @@ const ROOM_SIZE = 50
 const DEFAULT_SERVER_URL = window.location.origin
 
 const CONTROLLER_LEVELS: Record<number, number> = { 1: 200, 2: 45000, 3: 135000, 4: 405000, 5: 1215000, 6: 3645000, 7: 10935000 }
-
-const BODY_PARTS: Record<string, { cost: number; color: string; label: string }> = {
-  move: { cost: 50, color: '#a9b7c6', label: 'MOVE' },
-  work: { cost: 100, color: '#ffe56d', label: 'WORK' },
-  carry: { cost: 50, color: '#7f7f7f', label: 'CARRY' },
-  attack: { cost: 80, color: '#f93842', label: 'ATTACK' },
-  ranged_attack: { cost: 150, color: '#5d80b2', label: 'RANGED' },
-  heal: { cost: 250, color: '#65fd62', label: 'HEAL' },
-  claim: { cost: 600, color: '#b99cfb', label: 'CLAIM' },
-  tough: { cost: 10, color: '#ffffff', label: 'TOUGH' },
-}
 
 const CONSTRUCTABLE_STRUCTURES: Array<{ type: string; label: string; level: number }> = [
   { type: 'road', label: 'Road', level: 1 },
@@ -573,44 +564,79 @@ function SpawnConfirmDialog({ x, y, defaultName, onConfirm, onCancel }: {
 }
 
 function SpawnCalculator() {
-  const [parts, setParts] = useState<string[]>([])
+  const [parts, setParts] = useState<BodyPartType[]>([])
   const totalCost = parts.reduce((s, p) => s + (BODY_PARTS[p]?.cost ?? 0), 0)
   const moveParts = parts.filter((p) => p === 'move').length
   const otherParts = parts.length - moveParts
   const plainFatigue = otherParts * 2
   const moveReduce = moveParts * 2
   const plainSpeed = moveReduce >= plainFatigue ? '1/tick' : moveReduce > 0 ? `1/${Math.ceil(plainFatigue / moveReduce)}t` : 'immobile'
+  const counts = countBodyParts(parts)
+  const plannerGroups: Array<{ title: string; parts: BodyPartType[] }> = [
+    { title: 'Economy', parts: ['carry', 'work'] },
+    { title: 'Combat', parts: ['attack'] },
+    { title: 'Ranged', parts: ['ranged_attack', 'claim'] },
+    { title: 'Support', parts: ['heal', 'tough', 'move'] },
+  ]
 
   return (
-    <div className="stack" style={{ marginTop: 8 }}>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 2 }}>
-        {Object.entries(BODY_PARTS).map(([key, info]) => (
-          <button key={key} className="tool-tab" style={{ fontSize: '0.65rem', padding: '2px 4px', flex: 'none' }}
-            onClick={() => parts.length < 50 && setParts([...parts, key])}>
-            <span style={{ color: info.color }}>{info.label[0]}</span>
-            <span className="muted" style={{ fontSize: '0.6rem', marginLeft: 2 }}>{info.cost}</span>
-          </button>
+    <div className="creep-planner">
+      <div className="creep-planner-grid">
+        {plannerGroups.map((group) => (
+          <BodyWheel key={group.title} title={group.title} parts={group.parts} counts={counts} />
         ))}
+      </div>
+      <div className="creep-part-toolbar">
+        {BODY_PART_ORDER.map((key) => {
+          const info = BODY_PARTS[key]
+          return (
+            <button
+              key={key}
+              className="tool-tab creep-part-button"
+              onClick={() => parts.length < 50 && setParts([...parts, key])}
+              disabled={parts.length >= 50}
+            >
+              <span style={{ color: info.color }}>{info.label}</span>
+              <span className="muted creep-part-cost">{info.cost}</span>
+            </button>
+          )
+        })}
       </div>
       {parts.length > 0 && (
         <>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 2 }}>
+          <div className="creep-part-list">
             {parts.map((p, i) => (
-              <span key={i} style={{
-                fontSize: '0.65rem', padding: '1px 4px', borderRadius: 2,
-                background: 'rgba(255,255,255,0.08)', color: BODY_PARTS[p]?.color ?? '#fff',
-                cursor: 'pointer', fontFamily: 'var(--font-mono)',
-              }} onClick={() => setParts(parts.filter((_, j) => j !== i))}>
-                {p.slice(0, 2).toUpperCase()}
+              <button
+                key={`${p}-${i}`}
+                type="button"
+                className="creep-part-pill"
+                style={{ color: BODY_PARTS[p]?.color ?? '#fff' }}
+                onClick={() => setParts(parts.filter((_, j) => j !== i))}
+                title={`Remove ${BODY_PARTS[p].label}`}
+              >
+                {BODY_PARTS[p].shortLabel}
+              </button>
+            ))}
+          </div>
+          <div className="creep-planner-summary">
+            <div>Cost: <strong style={{ color: totalCost <= 300 ? '#7dc97d' : '#ffe56d' }}>{totalCost}</strong> energy</div>
+            <div>Parts: <strong>{parts.length}</strong> / 50</div>
+            <div>Plain: <strong>{plainSpeed}</strong></div>
+          </div>
+          <div className="creep-part-counts">
+            {BODY_PART_ORDER.filter((part) => counts[part] > 0).map((part) => (
+              <span key={part} className="creep-part-count" style={{ color: BODY_PARTS[part].color }}>
+                {BODY_PARTS[part].label}: {counts[part]}
               </span>
             ))}
           </div>
-          <div style={{ fontSize: '0.7rem', lineHeight: 1.8, color: 'var(--text-muted)' }}>
-            <div>Cost: <strong style={{ color: totalCost <= 300 ? '#7dc97d' : '#ffe56d' }}>{totalCost}</strong> energy · Parts: <strong>{parts.length}</strong></div>
-            <div>Plain: <strong>{plainSpeed}</strong></div>
-          </div>
-          <button className="btn-ghost compact" style={{ fontSize: '0.68rem' }} onClick={() => setParts([])}>Clear</button>
+          <button className="btn-ghost compact" style={{ fontSize: '0.68rem', width: 'fit-content' }} onClick={() => setParts([])}>Clear</button>
         </>
+      )}
+      {parts.length === 0 && (
+        <div className="muted" style={{ fontSize: '0.72rem' }}>
+          Add body parts to preview the official-style ring layout.
+        </div>
       )}
     </div>
   )
@@ -633,7 +659,7 @@ export default function App() {
   const [roomStatusInfo, setRoomStatusInfo] = useState<RoomStatusInfo | null>(null)
   const [terrain, setTerrain] = useState<TerrainCell[]>([])
   const [objects, setObjects] = useState<Record<string, RoomObject>>({})
-  const [roomUsers, setRoomUsers] = useState<Record<string, { username?: string }>>({})
+  const [roomUsers, setRoomUsers] = useState<Record<string, { username?: string; badge?: { color1?: string | number; color2?: string | number; color3?: string | number } }>>({})
   const [gameTime, setGameTime] = useState<number | null>(null)
   const [tickDuration, setTickDuration] = useState<number | null>(null)
   const [modules, setModules] = useState<Record<string, string>>({ main: '' })

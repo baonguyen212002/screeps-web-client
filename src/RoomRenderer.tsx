@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { countBodyParts, type BodyPartType } from './bodyParts'
 
 type ActionTarget = { x: number; y: number; message?: string; isPublic?: boolean }
 
@@ -43,7 +44,7 @@ type TerrainCell = 'plain' | 'wall' | 'swamp'
 interface RoomRendererProps {
   terrain: TerrainCell[]
   objects: Record<string, RoomObject>
-  roomUsers?: Record<string, { username?: string }>
+  roomUsers?: Record<string, { username?: string; badge?: { color1?: string | number; color2?: string | number; color3?: string | number } }>
   userId?: string
   roomName: string
   tickDuration?: number
@@ -78,12 +79,81 @@ const MINERAL_COLORS: Record<string, string> = {
   biomass: '#27ae60', metal: '#95a5a6', silicon: '#3498db', mist: '#9b59b6',
 }
 
+// Badge palette: 80 colors matching the server's hsl2rgb palette
+function badgePaletteColor(index: number): string {
+  const row = Math.floor(index / 20)
+  const col = index % 20
+  if (col === 0) {
+    const l = [0.8, 0.5, 0.3, 0.1][row] ?? 0.5
+    return `hsl(0,0%,${Math.round(l * 100)}%)`
+  }
+  const hue = Math.round(((col - 1) * 360) / 19)
+  const [s, l] = [[0.6, 0.8], [0.7, 0.5], [0.4, 0.3], [0.5, 0.1]][row] ?? [0.6, 0.5]
+  return `hsl(${hue},${Math.round(s * 100)}%,${Math.round(l * 100)}%)`
+}
+
+function resolveBadgeColor(color: string | number | undefined): string | null {
+  if (color == null) return null
+  if (typeof color === 'string') return color
+  return badgePaletteColor(color)
+}
+
 function easeInOut(t: number) {
   return t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t
 }
 
 function lerp(a: number, b: number, t: number) {
   return a + (b - a) * t
+}
+
+// Official renderer: move goes on bottom half (backSide), others fan symmetrically from top.
+// Carry and tough are excluded from the ring.
+// Each part type appears mirrored on both sides of the vertical axis.
+const RING_PARTS: { type: BodyPartType; color: string; backSide: boolean }[] = [
+  { type: 'work',          color: '#fde574', backSide: false },
+  { type: 'attack',        color: '#f72e41', backSide: false },
+  { type: 'ranged_attack', color: '#7fa7e5', backSide: false },
+  { type: 'heal',          color: '#56cf5e', backSide: false },
+  { type: 'claim',         color: '#b99cfb', backSide: false },
+  { type: 'move',          color: '#aab7c5', backSide: true  },
+]
+const RING_PART_ANGLE = Math.PI / 50  // radians per 1 body part (50 parts = PI = half circle each side)
+
+function drawBodyRing(
+  ctx: CanvasRenderingContext2D,
+  cx: number,
+  cy: number,
+  radius: number,
+  lineWidth: number,
+  counts: Record<BodyPartType, number>,
+) {
+  const ANGLE_SHIFT = -Math.PI / 2  // start from top
+  let frontAngle = 0   // grows from top toward sides
+  let backAngle = Math.PI  // grows from bottom toward sides
+
+  for (const { type, color, backSide } of RING_PARTS) {
+    const count = counts[type]
+    if (!count) continue
+    const sweep = RING_PART_ANGLE * count
+    const start = backSide ? backAngle : frontAngle
+
+    ctx.strokeStyle = color
+    ctx.lineWidth = lineWidth
+    ctx.lineCap = 'butt'
+
+    // Right side arc (clockwise)
+    ctx.beginPath()
+    ctx.arc(cx, cy, radius, ANGLE_SHIFT + start, ANGLE_SHIFT + start + sweep, false)
+    ctx.stroke()
+
+    // Left side mirror (counterclockwise)
+    ctx.beginPath()
+    ctx.arc(cx, cy, radius, ANGLE_SHIFT - start, ANGLE_SHIFT - start - sweep, true)
+    ctx.stroke()
+
+    if (backSide) backAngle += sweep
+    else frontAngle += sweep
+  }
 }
 
 function buildTerrainCanvas(terrain: TerrainCell[]): HTMLCanvasElement {
@@ -208,6 +278,7 @@ function drawObjects(
   ctx: CanvasRenderingContext2D,
   objects: Record<string, RoomObject>,
   userId: string | undefined,
+  roomUsers: Record<string, { username?: string; badge?: { color1?: string | number } }> | undefined,
   fromPos: Map<string, { x: number; y: number }>,
   t: number,
 ) {
@@ -528,50 +599,53 @@ function drawObjects(
       }
       case 'creep':
       case 'powerCreep': {
-        let creepColor = isOwn ? '#c8e07a' : '#d96464'
-        let borderColor = isOwn ? '#8dd08d' : '#ff8080'
-        if (obj.body && obj.body.length > 0) {
-          const counts: Record<string, number> = {}
-          for (const p of obj.body) {
-            if (p.type !== 'move' && p.type !== 'tough') counts[p.type] = (counts[p.type] ?? 0) + 1
-          }
-          const dominant = Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0]
-          if (dominant) {
-            const partColors: Record<string, [string, string]> = {
-              work: ['#ffe56d', '#c8a832'],
-              carry: ['#888888', '#666666'],
-              attack: ['#f93842', '#c0202a'],
-              ranged_attack: ['#5d80b2', '#3a5a8a'],
-              heal: ['#65fd62', '#3ac038'],
-              claim: ['#b99cfb', '#8a6cd0'],
-            }
-            if (!isOwn) {
-              creepColor = '#d96464'
-              borderColor = '#ff8080'
-            } else if (partColors[dominant]) {
-              creepColor = partColors[dominant][0]
-              borderColor = partColors[dominant][1]
-            }
-          }
-        }
-        // shadow
-        ctx.beginPath(); ctx.arc(cx, cy + 2, TILE * 0.3, 0, Math.PI * 2)
+        const counts = countBodyParts(obj.body)
+        const badgeColor = resolveBadgeColor(roomUsers?.[obj.user ?? '']?.badge?.color1)
+        const coreColor = isOwn ? '#4c4c4c' : '#575757'
+        const ringOutline = isOwn ? '#2a2a2a' : '#323232'
+        const playerColor = badgeColor ?? (isOwn ? '#ffe56d' : '#d8d8d8')
+        const shadowRadius = TILE * 0.32
+        const outerRadius = TILE * 0.38
+        const innerRadius = TILE * 0.2
+
+        ctx.beginPath(); ctx.arc(cx, cy + 2, shadowRadius, 0, Math.PI * 2)
         ctx.fillStyle = 'rgba(0,0,0,0.3)'; ctx.fill()
-        // body
-        ctx.beginPath(); ctx.arc(cx, cy, TILE * 0.28, 0, Math.PI * 2)
-        ctx.fillStyle = creepColor; ctx.fill()
-        ctx.strokeStyle = borderColor; ctx.lineWidth = 1.5; ctx.stroke()
-        // HP bar
+
+        // Glow halo màu badge
+        ctx.beginPath(); ctx.arc(cx, cy, outerRadius + TILE * 0.1, 0, Math.PI * 2)
+        ctx.strokeStyle = playerColor + '55'
+        ctx.lineWidth = TILE * 0.08
+        ctx.stroke()
+
+        ctx.beginPath(); ctx.arc(cx, cy, outerRadius, 0, Math.PI * 2)
+        ctx.strokeStyle = ringOutline
+        ctx.lineWidth = TILE * 0.16
+        ctx.stroke()
+
+        drawBodyRing(ctx, cx, cy, outerRadius, TILE * 0.14, counts)
+
+        ctx.beginPath(); ctx.arc(cx, cy, innerRadius, 0, Math.PI * 2)
+        ctx.fillStyle = coreColor
+        ctx.fill()
+        ctx.strokeStyle = playerColor + 'aa'
+        ctx.lineWidth = 1.5
+        ctx.stroke()
+
+        // Center dot màu badge
+        ctx.beginPath(); ctx.arc(cx, cy, TILE * 0.06, 0, Math.PI * 2)
+        ctx.fillStyle = playerColor
+        ctx.fill()
+
         if (obj.hits != null && obj.hitsMax != null && obj.hitsMax > 0) {
           const hpPct = obj.hits / obj.hitsMax
           const bw = TILE * 0.6, bh = 3
-          const bx = cx - bw / 2, by = cy - TILE * 0.38
+          const bx = cx - bw / 2, by = cy - TILE * 0.58
           ctx.fillStyle = 'rgba(0,0,0,0.5)'
           ctx.fillRect(bx, by, bw, bh)
           ctx.fillStyle = hpPct > 0.5 ? '#7dc97d' : hpPct > 0.25 ? '#f9ca24' : '#d96c6c'
           ctx.fillRect(bx, by, bw * hpPct, bh)
         }
-        // Say bubble
+
         if (obj.actionLog?.say?.message) {
           const msg = obj.actionLog.say.message.slice(0, 20)
           const fs = TILE * 0.28
@@ -633,12 +707,14 @@ export default function RoomRenderer({ terrain, objects, roomUsers, userId, room
   const animStartRef = useRef<number>(0)
   const hoverTileRef = useRef<{ x: number; y: number } | null>(null)
   const userIdRef = useRef(userId)
+  const roomUsersRef = useRef(roomUsers)
   const selectedObjectIdRef = useRef(selectedObjectId)
 
   useEffect(() => { panRef.current = pan }, [pan])
   useEffect(() => { zoomRef.current = zoom }, [zoom])
   useEffect(() => { tickDurationRef.current = tickDuration }, [tickDuration])
   useEffect(() => { userIdRef.current = userId }, [userId])
+  useEffect(() => { roomUsersRef.current = roomUsers }, [roomUsers])
   useEffect(() => { selectedObjectIdRef.current = selectedObjectId }, [selectedObjectId])
 
   // Rebuild terrain offscreen canvas when terrain changes
@@ -690,7 +766,7 @@ export default function RoomRenderer({ terrain, objects, roomUsers, userId, room
         // Rays fade out over the first half of the tick
         const rayAlpha = Math.max(0, 1 - t * 2)
         if (rayAlpha > 0) drawActions(ctx!, objectsRef.current, rayAlpha)
-        drawObjects(ctx!, objectsRef.current, userIdRef.current, fromPosRef.current, t)
+        drawObjects(ctx!, objectsRef.current, userIdRef.current, roomUsersRef.current, fromPosRef.current, t)
         // Highlight selected object
         const selId = selectedObjectIdRef.current
         if (selId) {

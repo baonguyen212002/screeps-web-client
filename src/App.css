@@ -1433,6 +1433,133 @@ button { cursor: pointer; }
 .tool-tab.active { background: rgba(91,141,217,0.2); border-color: var(--accent); color: var(--accent-hi); }
 .tool-tab:disabled { opacity: 0.35; cursor: not-allowed; }
 
+.creep-planner {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.creep-planner-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(110px, 1fr));
+  gap: 10px;
+}
+
+.body-wheel-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid rgba(255,255,255,0.07);
+  border-radius: 8px;
+  background: rgba(255,255,255,0.03);
+}
+
+.body-wheel-title {
+  font-size: 0.66rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+}
+
+.body-wheel-visual {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.body-wheel-svg {
+  display: block;
+}
+
+.body-wheel-track {
+  fill: none;
+  stroke: rgba(255,255,255,0.12);
+  stroke-width: 14;
+}
+
+.body-wheel-core {
+  fill: #4a4a4a;
+  stroke: #212121;
+  stroke-width: 2;
+}
+
+.body-wheel-legend {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.body-wheel-legend-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 0.68rem;
+  color: var(--text-muted);
+}
+
+.body-wheel-legend-item.has-value .body-wheel-legend-value {
+  color: var(--text-main);
+}
+
+.body-wheel-legend-line {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.body-wheel-legend-value {
+  font-family: var(--font-mono);
+}
+
+.creep-part-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.creep-part-button {
+  flex: none;
+  font-size: 0.67rem;
+  padding: 3px 6px;
+}
+
+.creep-part-cost {
+  font-size: 0.6rem;
+  margin-left: 4px;
+}
+
+.creep-part-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.creep-part-pill {
+  border: 1px solid rgba(255,255,255,0.08);
+  background: rgba(255,255,255,0.06);
+  border-radius: 999px;
+  padding: 2px 7px;
+  font-size: 0.66rem;
+  font-family: var(--font-mono);
+}
+
+.creep-part-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+}
+
+.creep-part-count {
+  font-size: 0.67rem;
+}
+
+.creep-planner-summary {
+  font-size: 0.72rem;
+  line-height: 1.8;
+  color: var(--text-muted);
+}
+
 /* ── Object inspector ─────────────────────────────────── */
 
 .body-part-badge {
