@@ -1030,9 +1030,12 @@ export default function App() {
   }
   async function handleRemoveObject(obj: RoomObject) {
     const safeId = obj._id.replace(/\\/g, '\\\\').replace(/'/g, "\\'")
+    const expression = obj.type === 'creep'
+      ? `Game.getObjectById('${safeId}')?.suicide?.()`
+      : `Game.getObjectById('${safeId}')?.remove?.()`
     await apiFetch('/api/user/console', {
       method: 'POST',
-      body: JSON.stringify({ expression: `Game.getObjectById('${safeId}')?.remove?.()` }),
+      body: JSON.stringify({ expression }),
     })
     // Optimistically remove from local state
     setObjects((cur) => {
@@ -1202,9 +1205,7 @@ export default function App() {
                       <button
                         key={item.type}
                         className={`construct-item ${available ? '' : 'is-disabled'} ${active ? 'active' : ''}`}
-                        disabled={!available}
                         onClick={() => {
-                          if (!available) return
                           setBuildStructureType(item.type)
                           setToolMode('build')
                           setShowConstructMenu(false)
@@ -1272,7 +1273,6 @@ export default function App() {
             if (toolMode === 'spawn') {
               setToolMode('none'); setSpawnConfirm({ x, y })
             } else if (toolMode === 'build') {
-              if (!canConstructStructure(buildStructureType, roomRcl)) return
               if (!busy) { setBusy(true); void handleCreateConstruction(x, y).finally(() => setBusy(false)) }
             } else if (toolMode === 'flag') {
               if (!busy) { setBusy(true); void handleCreateFlag(x, y).finally(() => setBusy(false)) }
@@ -1305,7 +1305,7 @@ export default function App() {
                 {selectedObject.hits != null && selectedObject.hitsMax != null && <div className="info-row"><span>hits</span><strong>{selectedObject.hits}/{selectedObject.hitsMax}</strong></div>}
                 {selectedObject.store && Object.keys(selectedObject.store).length > 0 && <div className="info-row"><span>store</span><strong>{Object.entries(selectedObject.store).map(([k, v]) => `${k}: ${v}`).join(', ')}</strong></div>}
                 <div className="info-row"><span>id</span><strong>{selectedObject._id}</strong></div>
-                <div className="info-row"><span>owner</span><strong>{roomUsers[selectedObject.user ?? '']?.username ?? selectedObject.user ?? 'unknown'}</strong></div>
+                {selectedObject.user != null && <div className="info-row"><span>owner</span><strong>{roomUsers[selectedObject.user]?.username ?? selectedObject.user}</strong></div>}
                 <div className="info-row"><span>position</span><strong>{selectedObject.x ?? '—'}, {selectedObject.y ?? '—'}</strong></div>
                 {selectedObject.structureType && <div className="info-row"><span>structure</span><strong>{selectedObject.structureType}</strong></div>}
                 {selectedObject.type === 'controller' && (() => {
@@ -1354,7 +1354,7 @@ export default function App() {
                 )}
                 {selectedObject.type !== 'flag' && (
                   <button className="btn-ghost compact" style={{ marginTop: 4, width: '100%', color: 'var(--accent-danger)' }} onClick={() => void handleRemoveObject(selectedObject)}>
-                    {selectedObject.type === 'constructionSite' ? 'Remove Site' : 'Remove Object'}
+                    {selectedObject.type === 'constructionSite' ? 'Remove Site' : selectedObject.type === 'creep' ? 'Suicide' : 'Remove Object'}
                   </button>
                 )}
                 <button className="btn-ghost compact" style={{ marginTop: 6, width: '100%' }} onClick={() => { setInspectedObjectData(selectedObject); setMemoryNavigatePath(getMemoryPath(selectedObject)); setDockTab('memory') }}>Memory</button>

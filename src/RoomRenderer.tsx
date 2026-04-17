@@ -624,16 +624,30 @@ function drawObjects(
 
         drawBodyRing(ctx, cx, cy, outerRadius, TILE * 0.14, counts)
 
+        // Energy fill: inner core scales with carry energy
+        const carryCapacity = counts.carry * 50
+        const energyStored = obj.store?.energy ?? 0
+        const energyRatio = carryCapacity > 0 ? Math.min(1, energyStored / carryCapacity) : 0
+
         ctx.beginPath(); ctx.arc(cx, cy, innerRadius, 0, Math.PI * 2)
         ctx.fillStyle = coreColor
         ctx.fill()
+
+        if (energyRatio > 0) {
+          // Yellow fill grows from 0 to innerRadius as energy fills up
+          ctx.beginPath(); ctx.arc(cx, cy, innerRadius * energyRatio, 0, Math.PI * 2)
+          ctx.fillStyle = `rgba(255,225,80,${0.4 + energyRatio * 0.5})`
+          ctx.fill()
+        }
+
         ctx.strokeStyle = playerColor + 'aa'
         ctx.lineWidth = 1.5
         ctx.stroke()
 
-        // Center dot màu badge
-        ctx.beginPath(); ctx.arc(cx, cy, TILE * 0.06, 0, Math.PI * 2)
-        ctx.fillStyle = playerColor
+        // Center dot: grows with energy ratio (min small, max fills core)
+        const dotRadius = TILE * 0.04 + TILE * 0.1 * energyRatio
+        ctx.beginPath(); ctx.arc(cx, cy, dotRadius, 0, Math.PI * 2)
+        ctx.fillStyle = energyRatio > 0 ? '#ffe56d' : playerColor
         ctx.fill()
 
         if (obj.hits != null && obj.hitsMax != null && obj.hitsMax > 0) {
