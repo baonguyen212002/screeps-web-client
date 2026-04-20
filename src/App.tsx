@@ -19,12 +19,26 @@ import BodyWheel from './BodyWheel'
 import type { LogEntry } from './ConsolePane'
 import { BODY_PARTS, BODY_PART_ORDER, countBodyParts, type BodyPartType } from './bodyParts'
 
+type SocketChannelListener = (data: SocketPayload) => void
+
 type ScreepsUser = {
   _id: string
   username?: string
+  email?: string
   cpu?: number
   gcl?: number
   power?: number
+  notifyPrefs?: {
+    disabled?: boolean
+    disabledOnMessages?: boolean
+    sendOnline?: boolean
+    interval?: number
+    errorsInterval?: number
+  }
+  steam?: {
+    id?: string
+    steamProfileLinkHidden?: boolean
+  }
 }
 
 function gclLevel(gcl: number) {
@@ -117,6 +131,7 @@ type FlagTuple = [string, number, number, number, number]
 
 type ToolMode = 'none' | 'spawn' | 'build' | 'invader' | 'flag' | 'creep'
 type DockTab = 'script' | 'console' | 'memory' | 'market' | 'craft' | 'power' | 'messages' | 'leaderboard'
+type MobilePanel = 'none' | 'player' | 'room' | 'server' | 'inspect'
 
 type SocketPayload = Record<string, unknown>
 type RoomSocketPayload = {
@@ -149,6 +164,7 @@ const USERNAME_KEY = 'screeps-web-client-username'
 const USERNAME_HEADER = 'local-web-client'
 const DEFAULT_ROOM = 'W3N5'
 const ROOM_SIZE = 50
+const MOBILE_BREAKPOINT = 820
 const DEFAULT_SERVER_URL = window.location.origin
 
 const CONTROLLER_LEVELS: Record<number, number> = { 1: 200, 2: 45000, 3: 135000, 4: 405000, 5: 1215000, 6: 3645000, 7: 10935000 }
@@ -473,7 +489,7 @@ function reportIgnoredError(error: unknown): void {
   void error
 }
 
-function dockTabLabel(tab: DockTab): string {
+function dockTabLabel(tab: DockTab, messagesUnreadCount = 0): string {
   switch (tab) {
     case 'script': return 'Code'
     case 'console': return 'Console'
@@ -481,7 +497,7 @@ function dockTabLabel(tab: DockTab): string {
     case 'market': return 'Market'
     case 'craft': return 'Craft'
     case 'power': return 'Power Creeps'
-    case 'messages': return 'Messages'
+    case 'messages': return messagesUnreadCount > 0 ? `Messages (${messagesUnreadCount})` : 'Messages'
     case 'leaderboard': return 'Leaderboard'
   }
 }
@@ -674,11 +690,31 @@ export default function App() {
   const [busy, setBusy] = useState(false)
   const [socketState, setSocketState] = useState('offline')
   const [socketReconnectKey, setSocketReconnectKey] = useState(0)
+  const [messagesUnreadCount, setMessagesUnreadCount] = useState(0)
+  const [toastItems, setToastItems] = useState<Array<{ id: number; text: string }>>([])
+  const [accountOverview, setAccountOverview] = useState<{ rooms?: string[]; totals?: Record<string, number>; gametimes?: number[] } | null>(null)
+  const [userStats, setUserStats] = useState<Record<string, unknown>>({})
+  const [moneyHistory, setMoneyHistory] = useState<Array<Record<string, unknown>>>([])
+  const [moneyHistoryHasMore, setMoneyHistoryHasMore] = useState(false)
+  const [emailDraft, setEmailDraft] = useState('')
+  const [usernameDraft, setUsernameDraft] = useState('')
+  const [usernameCheck, setUsernameCheck] = useState('')
+  const [emailCheck, setEmailCheck] = useState('')
+  const [steamVisible, setSteamVisible] = useState(true)
+  const [badgeSvgUrl, setBadgeSvgUrl] = useState('')
+  const [respawnProhibitedRooms, setRespawnProhibitedRooms] = useState<string[]>([])
+  const [gameTickFloor, setGameTickFloor] = useState<number | null>(null)
+  const [serverGameTime, setServerGameTime] = useState<number | null>(null)
+  const [roomOverview, setRoomOverview] = useState<{ owner?: { username?: string }; stats?: Record<string, unknown>; totals?: Record<string, unknown> } | null>(null)
+  const [globalIntentName, setGlobalIntentName] = useState('respawn')
+  const [globalIntentJson, setGlobalIntentJson] = useState('{}')
   const [authError, setAuthError] = useState('')
   const [dockTab, setDockTab] = useState<DockTab>('script')
   const [dockHeight, setDockHeight] = useState(380)
   const [leftWidth, setLeftWidth] = useState(200)
   const [rightWidth, setRightWidth] = useState(210)
+  const [mobileViewport, setMobileViewport] = useState(() => typeof window !== 'undefined' && window.innerWidth <= MOBILE_BREAKPOINT)
+  const [mobilePanel, setMobilePanel] = useState<MobilePanel>('none')
   const [toolMode, setToolMode] = useState<ToolMode>('none')
   const [showConstructMenu, setShowConstructMenu] = useState(false)
   const [showFlagMenu, setShowFlagMenu] = useState(false)
@@ -700,6 +736,8 @@ export default function App() {
   const isDraggingDock = useRef(false); const dragStartY = useRef(0); const dragStartHeight = useRef(0)
   const isDraggingLeft = useRef(false); const isDraggingRight = useRef(false); const dragStartX = useRef(0); const dragStartWidth = useRef(0)
   const socketRef = useRef<{ close: () => void; send: (m: string) => void } | null>(null)
+  const socketChannelListenersRef = useRef<Map<string, Set<SocketChannelListener>>>(new Map())
+  const toastIdRef = useRef(1)
   const tokenRef = useRef(token); const userRef = useRef<ScreepsUser | null>(null)
   const hydratedProfileTokenRef = useRef(''); const memoryWatchPathRef = useRef('')
   const lastGameTimeRef = useRef<number | null>(null); const lastTickTimeRef = useRef<number | null>(null)
@@ -792,6 +830,16 @@ export default function App() {
     return () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp) }
   }, [])
 
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    function handleResize() {
+      setMobileViewport(window.innerWidth <= MOBILE_BREAKPOINT)
+    }
+    handleResize()
+    window.addEventListener('resize', handleResize)
+    return () => window.removeEventListener('resize', handleResize)
+  }, [])
+
   const apiFetch = useCallback(async <T,>(path: string, init?: RequestInit): Promise<T> => {
     const requestAuthVersion = authVersionRef.current
     const h = new Headers(init?.headers ?? {})
@@ -804,6 +852,84 @@ export default function App() {
     return readResponse<T>(res)
   }, [serverUrl, serverPassword, loginName, rotateToken])
 
+  const refreshAccountData = useCallback(async (currentUser?: ScreepsUser | null) => {
+    const targetUser = currentUser ?? userRef.current
+    if (!targetUser?._id) return
+
+    try {
+      const [overview, stats, money, respawnRooms] = await Promise.all([
+        apiFetch<{ rooms?: string[]; totals?: Record<string, number>; gametimes?: number[] }>('/api/user/overview?interval=8').catch(() => ({ rooms: [], totals: {}, gametimes: [] })),
+        apiFetch<{ stats?: Record<string, unknown> }>('/api/user/stats?interval=8').catch(() => ({ stats: {} })),
+        apiFetch<{ list?: Array<Record<string, unknown>>; hasMore?: boolean }>('/api/user/money-history?page=0').catch(() => ({ list: [], hasMore: false })),
+        apiFetch<{ rooms?: string[] }>('/api/user/respawn-prohibited-rooms').catch(() => ({ rooms: [] })),
+      ])
+      setAccountOverview(overview)
+      setUserStats(stats.stats ?? {})
+      setMoneyHistory(money.list ?? [])
+      setMoneyHistoryHasMore(!!money.hasMore)
+      setRespawnProhibitedRooms(respawnRooms.rooms ?? [])
+    } catch {
+      /* ignore */
+    }
+
+    setEmailDraft(targetUser.email ?? '')
+    setUsernameDraft(targetUser.username ?? '')
+    setSteamVisible(!targetUser.steam?.steamProfileLinkHidden)
+    setBadgeSvgUrl(`${serverUrl}/api/user/badge-svg?username=${encodeURIComponent(targetUser.username ?? '')}&border=1`)
+  }, [apiFetch, serverUrl])
+
+  const refreshRoomAdminData = useCallback(async (room: string, object?: RoomObject | null) => {
+    try {
+      const [tickData, timeData, overviewData] = await Promise.all([
+        apiFetch<{ tick: number }>('/api/game/tick').catch(() => ({ tick: 0 })),
+        apiFetch<{ time: number }>('/api/game/time').catch(() => ({ time: 0 })),
+        apiFetch<{ owner?: { username?: string }; stats?: Record<string, unknown>; totals?: Record<string, unknown> }>(`/api/game/room-overview?room=${encodeURIComponent(room)}`).catch(() => ({})),
+      ])
+      setGameTickFloor(tickData.tick ?? null)
+      setServerGameTime(timeData.time ?? null)
+      setRoomOverview(overviewData)
+    } catch {
+      /* ignore */
+    }
+    if (object?._id && object.type !== 'flag') {
+      try {
+        await apiFetch('/api/game/check-unique-object-name', { method: 'POST', body: JSON.stringify({ type: 'spawn', name: object.name || 'Spawn1' }) })
+      } catch {
+        /* ignore */
+      }
+    }
+  }, [apiFetch])
+
+  const subscribeSocketChannel = useCallback((channel: string, listener: SocketChannelListener) => {
+    const listeners = socketChannelListenersRef.current.get(channel) ?? new Set<SocketChannelListener>()
+    const wasEmpty = listeners.size === 0
+    listeners.add(listener)
+    socketChannelListenersRef.current.set(channel, listeners)
+    if (wasEmpty && socketRef.current && 'readyState' in socketRef.current && (socketRef.current as { readyState?: number }).readyState === 1) {
+      socketRef.current.send(`subscribe ${channel}`)
+    }
+
+    return () => {
+      const current = socketChannelListenersRef.current.get(channel)
+      if (!current) return
+      current.delete(listener)
+      if (current.size === 0) {
+        socketChannelListenersRef.current.delete(channel)
+        if (socketRef.current && 'readyState' in socketRef.current && (socketRef.current as { readyState?: number }).readyState === 1) {
+          socketRef.current.send(`unsubscribe ${channel}`)
+        }
+      }
+    }
+  }, [])
+
+  const pushToast = useCallback((text: string) => {
+    const id = toastIdRef.current++
+    setToastItems((current) => [...current, { id, text }].slice(-4))
+    window.setTimeout(() => {
+      setToastItems((current) => current.filter((item) => item.id !== id))
+    }, 4500)
+  }, [])
+
   const refreshProfile = useCallback(async () => {
     const me = await apiFetch<ScreepsUser>('/api/auth/me'); setUser(me)
     const w = await apiFetch<{ status: string }>('/api/user/world-status'); setWorldStatus(w.status)
@@ -812,7 +938,9 @@ export default function App() {
     const tb = b.list.find((x) => x.branch === editingBranch) ?? b.list.find((x) => x.activeWorld) ?? b.list[0]
     applyBranchModules(tb)
     const rs = await apiFetch<{ rooms: string[] }>(`/api/user/rooms?id=${encodeURIComponent(me._id)}`); setUserRooms(rs.rooms ?? [])
-  }, [apiFetch, editingBranch, applyBranchModules])
+    await refreshAccountData(me)
+    await refreshRoomAdminData(roomName)
+  }, [apiFetch, editingBranch, applyBranchModules, refreshAccountData, refreshRoomAdminData, roomName])
 
   const fetchRoomSnapshot = useCallback(async (room: string) => {
     const data = await apiFetch<RoomSnapshot>(`/api/game/room-objects?room=${encodeURIComponent(room)}`)
@@ -925,10 +1053,11 @@ export default function App() {
     socket.onmessage = (ev) => {
       if (socketRef.current !== socket || socketAuthVersion !== authVersionRef.current) return
       const msg = String(ev.data)
-      if (msg.startsWith('auth ok ')) { reconnectCountRef.current = 0; rotateToken(msg.slice(8)); setSocketState('live'); socket.send(`subscribe room:${roomName}`); if (userRef.current) { ['console', 'cpu', 'resources', 'code'].forEach(s => socket.send(`subscribe user:${userRef.current!._id}/${s}`)); if (memoryWatchPathRef.current) socket.send(`subscribe user:${userRef.current!._id}/memory/${memoryWatchPathRef.current}`) }; return }
+      if (msg.startsWith('auth ok ')) { reconnectCountRef.current = 0; rotateToken(msg.slice(8)); setSocketState('live'); socket.send(`subscribe room:${roomName}`); if (userRef.current) { ['console', 'cpu', 'resources', 'code'].forEach(s => socket.send(`subscribe user:${userRef.current!._id}/${s}`)); if (memoryWatchPathRef.current) socket.send(`subscribe user:${userRef.current!._id}/memory/${memoryWatchPathRef.current}`) }; for (const channel of socketChannelListenersRef.current.keys()) socket.send(`subscribe ${channel}`); return }
       if (msg.startsWith('auth failed')) { storeToken(''); setSocketState('auth failed'); return }
       if (!msg.startsWith('[')) return
       const [ch, d] = JSON.parse(msg) as [string, SocketPayload]
+      socketChannelListenersRef.current.get(ch)?.forEach((listener) => listener(d))
       if (ch === `room:${roomName}`) {
         const payload = d as RoomSocketPayload
         setObjects((cur) => {
@@ -976,6 +1105,13 @@ export default function App() {
     }
   }, [roomName, user?._id, rotateToken, socketReconnectKey])
 
+  useEffect(() => {
+    return subscribeSocketChannel('server-message', (payload) => {
+      if (payload == null) return
+      pushToast(typeof payload === 'string' ? payload : JSON.stringify(payload))
+    })
+  }, [pushToast, subscribeSocketChannel])
+
   async function handleSaveCode() { setBusy(true); try { await apiFetch('/api/user/code', { method: 'POST', body: JSON.stringify({ branch: editingBranch, modules }) }) } catch (error) { reportIgnoredError(error) } finally { setBusy(false) } }
   function handleCreateModule() {
     const nextName = newModuleName.trim().replace(/\.js$/i, '')
@@ -1021,6 +1157,64 @@ export default function App() {
     await apiFetch('/api/user/respawn', { method: 'POST', body: JSON.stringify({}) })
     await refreshProfile()
   }
+  async function handleSaveEmail() {
+    if (!emailDraft.trim()) return
+    await apiFetch('/api/user/email', { method: 'POST', body: JSON.stringify({ email: emailDraft.trim() }) })
+    await refreshProfile()
+  }
+  async function handleCheckUsername() {
+    try {
+      await apiFetch(`/api/register/check-username?username=${encodeURIComponent(usernameDraft.trim())}`)
+      setUsernameCheck('available')
+    } catch (error) {
+      setUsernameCheck(error instanceof Error ? error.message : 'unavailable')
+    }
+  }
+  async function handleCheckEmail() {
+    try {
+      await apiFetch(`/api/register/check-email?email=${encodeURIComponent(emailDraft.trim())}`)
+      setEmailCheck('available')
+    } catch (error) {
+      setEmailCheck(error instanceof Error ? error.message : 'unavailable')
+    }
+  }
+  async function handleSetUsername() {
+    if (!usernameDraft.trim()) return
+    await apiFetch('/api/register/set-username', { method: 'POST', body: JSON.stringify({ username: usernameDraft.trim(), email: emailDraft.trim() || undefined }) })
+    await refreshProfile()
+  }
+  async function handleTutorialDone() {
+    await apiFetch('/api/user/tutorial-done', { method: 'POST', body: JSON.stringify({}) })
+  }
+  async function handleSetSteamVisible(visible: boolean) {
+    setSteamVisible(visible)
+    await apiFetch('/api/user/set-steam-visible', { method: 'POST', body: JSON.stringify({ visible }) })
+    await refreshProfile()
+  }
+  async function handleSetNotifyWhenAttacked(enabled: boolean) {
+    if (!selectedObject?._id) return
+    await apiFetch('/api/game/set-notify-when-attacked', { method: 'POST', body: JSON.stringify({ _id: selectedObject._id, enabled }) })
+    await fetchRoomSnapshot(roomName)
+  }
+  async function handleCreateInvader(size: 'small' | 'big', type: 'Melee' | 'Ranged' | 'Healer') {
+    await apiFetch('/api/game/create-invader', {
+      method: 'POST',
+      body: JSON.stringify({ room: roomName, x: 25, y: 25, size, type, boosted: false }),
+    })
+    await fetchRoomSnapshot(roomName)
+  }
+  async function handleRemoveInvader() {
+    if (!selectedObject?._id) return
+    await apiFetch('/api/game/remove-invader', { method: 'POST', body: JSON.stringify({ _id: selectedObject._id }) })
+    await fetchRoomSnapshot(roomName)
+  }
+  async function handleAddGlobalIntent() {
+    const intent = JSON.parse(globalIntentJson)
+    await apiFetch('/api/game/add-global-intent', {
+      method: 'POST',
+      body: JSON.stringify({ name: globalIntentName, intent }),
+    })
+  }
   async function handleCreateConstruction(x: number, y: number) {
     await apiFetch('/api/game/create-construction', {
       method: 'POST',
@@ -1029,14 +1223,26 @@ export default function App() {
     await fetchRoomSnapshot(roomName)
   }
   async function handleRemoveObject(obj: RoomObject) {
-    const safeId = obj._id.replace(/\\/g, '\\\\').replace(/'/g, "\\'")
-    const expression = obj.type === 'creep'
-      ? `Game.getObjectById('${safeId}')?.suicide?.()`
-      : `Game.getObjectById('${safeId}')?.remove?.()`
-    await apiFetch('/api/user/console', {
-      method: 'POST',
-      body: JSON.stringify({ expression }),
-    })
+    if (obj.type === 'constructionSite') {
+      await apiFetch('/api/game/add-object-intent', {
+        method: 'POST',
+        body: JSON.stringify({
+          room: obj.room,
+          _id: 'room',
+          name: 'removeConstructionSite',
+          intent: [{ id: obj._id, roomName: obj.room }],
+        }),
+      })
+    } else {
+      const safeId = obj._id.replace(/\\/g, '\\\\').replace(/'/g, "\\'")
+      const expression = obj.type === 'creep'
+        ? `Game.getObjectById('${safeId}')?.suicide?.()`
+        : `Game.getObjectById('${safeId}')?.destroy?.()`
+      await apiFetch('/api/user/console', {
+        method: 'POST',
+        body: JSON.stringify({ expression }),
+      })
+    }
     // Optimistically remove from local state
     setObjects((cur) => {
       const next = { ...cur }
@@ -1044,10 +1250,10 @@ export default function App() {
       return next
     })
     setSelectedObject(null)
-    await fetchRoomSnapshot(roomName)
   }
   async function handleCreateFlag(x: number, y: number) {
     const name = flagDraft.name.trim() || (await apiFetch<{ name: string }>('/api/game/gen-unique-flag-name', { method: 'POST', body: JSON.stringify({}) })).name
+    await apiFetch('/api/game/check-unique-flag-name', { method: 'POST', body: JSON.stringify({ name }) })
     await apiFetch('/api/game/create-flag', {
       method: 'POST',
       body: JSON.stringify({ room: roomName, x, y, name, color: flagDraft.color, secondaryColor: flagDraft.secondaryColor }),
@@ -1109,12 +1315,29 @@ export default function App() {
     acc[cell] += 1
     return acc
   }, { plain: 0, swamp: 0, wall: 0 } as Record<TerrainCell, number>)
+  const mobilePanelTitle = mobilePanel === 'player'
+    ? 'Player'
+    : mobilePanel === 'room'
+      ? 'Room'
+      : mobilePanel === 'server'
+        ? 'Server'
+        : selectedObject
+          ? `${humanizeObjectType(selectedObject.type)}${selectedObject.name ? ` · ${selectedObject.name}` : ''}`
+          : 'Inspect'
 
   useEffect(() => {
     if (!branches.length) return
     if (branches.some((branch) => branch.branch === cloneSourceBranch)) return
     setCloneSourceBranch(editingBranch || branches[0].branch)
   }, [branches, cloneSourceBranch, editingBranch])
+
+  useEffect(() => {
+    if (!mobileViewport) {
+      setMobilePanel('none')
+      return
+    }
+    if (selectedObject) setMobilePanel('inspect')
+  }, [mobileViewport, selectedObject])
 
   if (!user) return (
     <div className="login-page"><div className="login-card"><div className="login-logo">Screeps</div><form className="stack" onSubmit={(e) => { e.preventDefault(); void bootstrapSession() }}>
@@ -1133,7 +1356,10 @@ export default function App() {
         <aside className="world-left-rail">
           <div className="rail-resize-handle rail-resize-right" onMouseDown={(e) => { isDraggingLeft.current = true; dragStartX.current = e.clientX; dragStartWidth.current = leftWidth; e.preventDefault() }} />
           <div className="flat-panel"><div className="flat-title">Player</div>
+            {badgeSvgUrl && <div style={{ display: 'flex', justifyContent: 'center', padding: '2px 0 8px' }}><img src={badgeSvgUrl} alt="Badge" style={{ width: 56, height: 56 }} /></div>}
             <div className="info-row"><span>name</span><strong>{user.username ?? loginName}</strong></div>
+            {user.email && <div className="info-row"><span>email</span><strong>{user.email}</strong></div>}
+            {user.steam?.id && <div className="info-row"><span>steam</span><strong>{user.steam.id}</strong></div>}
             {user.gcl != null && (() => { const g = gclProgress(user.gcl); return (<div style={{ padding: '3px 0' }}><div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.72rem' }}><span>GCL {g.level}</span><span>{Math.round(g.pct)}%</span></div><div className="obj-hp-wrap" style={{ height: 4 }}><div className="obj-hp-bar" style={{ width: `${g.pct}%`, background: '#bfdc82' }} /></div></div>) })()}
             {user.power != null && user.power > 0 && (() => {
               const current = Math.pow(gplLevel(user.power), 2.4) * 1000000;
@@ -1144,6 +1370,30 @@ export default function App() {
             <div className="info-row"><span>CPU</span><strong>{cpuUsed != null ? Math.round(cpuUsed) : '—'}/{user.cpu ?? '?'}</strong></div>
             {cpuBucket != null && <div className="info-row"><span>bucket</span><strong>{cpuBucket}</strong></div>}
             {credits != null && <div className="info-row"><span>credits</span><strong>{credits.toFixed(2)}</strong></div>}
+            {accountOverview?.rooms && <div className="info-row"><span>overview rooms</span><strong>{accountOverview.rooms.length}</strong></div>}
+            <div className="info-row"><span>stats keys</span><strong>{Object.keys(userStats).length}</strong></div>
+            <div className="info-row"><span>money rows</span><strong>{moneyHistory.length}{moneyHistoryHasMore ? '+' : ''}</strong></div>
+            <label className="script-select-wrap" style={{ marginTop: 8 }}>
+              <span>Username</span>
+              <input value={usernameDraft} onChange={(e) => setUsernameDraft(e.target.value)} placeholder="Check or set username…" />
+            </label>
+            {usernameCheck && <div className="info-row"><span>username</span><strong>{usernameCheck}</strong></div>}
+            <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+              <button className="btn-ghost compact" style={{ flex: 1 }} onClick={() => void handleCheckUsername()} disabled={!usernameDraft.trim()}>Check</button>
+              <button className="btn-ghost compact" style={{ flex: 1 }} onClick={() => void handleSetUsername()} disabled={!usernameDraft.trim()}>Set</button>
+            </div>
+            <label className="script-select-wrap" style={{ marginTop: 8 }}>
+              <span>Email</span>
+              <input value={emailDraft} onChange={(e) => setEmailDraft(e.target.value)} placeholder="Set account email…" />
+            </label>
+            {emailCheck && <div className="info-row"><span>email</span><strong>{emailCheck}</strong></div>}
+            <button className="btn-ghost compact" style={{ marginTop: 6, width: '100%' }} onClick={() => void handleCheckEmail()} disabled={!emailDraft.trim()}>Check Email</button>
+            <button className="btn-ghost compact" style={{ marginTop: 6, width: '100%' }} onClick={() => void handleSaveEmail()} disabled={!emailDraft.trim()}>Save Email</button>
+            <label className="notify-pref" style={{ marginTop: 8 }}>
+              <input type="checkbox" checked={steamVisible} onChange={(e) => void handleSetSteamVisible(e.target.checked)} />
+              <span>Steam profile visible</span>
+            </label>
+            <button className="btn-ghost compact" style={{ marginTop: 6, width: '100%' }} onClick={() => void handleTutorialDone()}>Tutorial Done</button>
             <button className="btn-ghost" style={{ marginTop: 6, width: '100%' }} onClick={() => setShowBadgeEditor(true)}>Badge</button>
             <button className="btn-ghost" style={{ marginTop: 4, width: '100%' }} onClick={handleSignOut}>Sign out</button>
           </div>
@@ -1177,8 +1427,8 @@ export default function App() {
         <main className="world-stage">
           <div className="world-stage-hud">
             <div className="hud-chip"><span>room</span><strong>{roomName}</strong></div>
-            <div className="hud-chip"><span>world</span><strong>{worldStatusLabel(worldStatus)}</strong></div>
-            <div className="hud-chip"><span>tick</span><strong>{gameTime ?? '—'}</strong></div>
+            <div className="hud-chip hud-chip-minor"><span>world</span><strong>{worldStatusLabel(worldStatus)}</strong></div>
+            <div className="hud-chip hud-chip-minor"><span>tick</span><strong>{gameTime ?? '—'}</strong></div>
             <div className={`hud-chip ${socketIndicator === 'live' ? 'is-live' : ''}`}><span>socket</span><strong>{socketState}</strong></div>
           </div>
           <div className="world-toolbar">
@@ -1199,7 +1449,7 @@ export default function App() {
               {showConstructMenu && (
                 <div className="construct-menu">
                   {CONSTRUCTABLE_STRUCTURES.map((item) => {
-                    const available = canConstructStructure(item.type, roomRcl)
+                    const available = roomRcl === 0 || canConstructStructure(item.type, roomRcl)
                     const active = buildStructureType === item.type
                     return (
                       <button
@@ -1268,8 +1518,8 @@ export default function App() {
             </div>
             <button className="toolbar-btn" onClick={() => { setShowConstructMenu(false); setShowFlagMenu(false); setShowCreepMenu(false); setShowWorldMap(true) }}>World Map</button>
           </div>
-          {spawnConfirm && <SpawnConfirmDialog x={spawnConfirm.x} y={spawnConfirm.y} defaultName={spawnName} onConfirm={(n) => { setSpawnName(n); setSpawnConfirm(null); setBusy(true); apiFetch<{ name: string }>('/api/game/gen-unique-object-name', { method: 'POST', body: JSON.stringify({ type: 'spawn' }) }).then(gen => apiFetch('/api/game/place-spawn', { method: 'POST', body: JSON.stringify({ room: roomName, x: spawnConfirm.x, y: spawnConfirm.y, name: n.trim() || gen.name }) })).then(() => { fetchRoomSnapshot(roomName); refreshProfile() }).finally(() => setBusy(false)) }} onCancel={() => setSpawnConfirm(null)} />}
-          <RoomRenderer terrain={terrain} objects={objects} roomUsers={roomUsers} roomName={roomName} userId={user?._id} tickDuration={tickDuration ?? 1000} selectedObjectId={selectedObject?._id} onTileClick={(x, y) => {
+          {spawnConfirm && <SpawnConfirmDialog x={spawnConfirm.x} y={spawnConfirm.y} defaultName={spawnName} onConfirm={(n) => { setSpawnName(n); setSpawnConfirm(null); setBusy(true); apiFetch<{ name: string }>('/api/game/gen-unique-object-name', { method: 'POST', body: JSON.stringify({ type: 'spawn' }) }).then(async (gen) => { const finalName = n.trim() || gen.name; await apiFetch('/api/game/check-unique-object-name', { method: 'POST', body: JSON.stringify({ type: 'spawn', name: finalName }) }); return apiFetch('/api/game/place-spawn', { method: 'POST', body: JSON.stringify({ room: roomName, x: spawnConfirm.x, y: spawnConfirm.y, name: finalName }) }) }).then(() => { fetchRoomSnapshot(roomName); refreshProfile() }).finally(() => setBusy(false)) }} onCancel={() => setSpawnConfirm(null)} />}
+          <RoomRenderer terrain={terrain} objects={objects} roomUsers={roomUsers} roomName={roomName} userId={user?._id} gameTime={gameTime} tickDuration={tickDuration ?? 1000} selectedObjectId={selectedObject?._id} onTileClick={(x, y) => {
             if (toolMode === 'spawn') {
               setToolMode('none'); setSpawnConfirm({ x, y })
             } else if (toolMode === 'build') {
@@ -1278,18 +1528,152 @@ export default function App() {
               if (!busy) { setBusy(true); void handleCreateFlag(x, y).finally(() => setBusy(false)) }
             } else if (!!token && !busy && worldStatus !== 'normal' && !roomOwnerId) setSpawnConfirm({ x, y }); else setSelectedObject(pickObjectAtTile(objects, x, y, selectedObject?._id))
           }} />
+          {mobileViewport && (
+            <>
+              <div className="mobile-stage-nav">
+                {(['room', 'player', 'server', 'inspect'] as MobilePanel[]).map((panel) => (
+                  <button
+                    key={panel}
+                    className={`mobile-stage-btn ${mobilePanel === panel ? 'active' : ''}`}
+                    onClick={() => setMobilePanel((current) => current === panel ? 'none' : panel)}
+                  >
+                    {panel === 'inspect' ? 'Inspect' : panel[0].toUpperCase() + panel.slice(1)}
+                  </button>
+                ))}
+              </div>
+              {mobilePanel !== 'none' && (
+                <div className="mobile-sheet">
+                  <div className="mobile-sheet-header">
+                    <div className="mobile-sheet-title">{mobilePanelTitle}</div>
+                    <button className="mobile-sheet-close" onClick={() => setMobilePanel('none')}>✕</button>
+                  </div>
+                  <div className="mobile-sheet-body">
+                    {mobilePanel === 'player' && (
+                      <>
+                        <div className="mobile-stat-grid">
+                          <div className="mobile-stat-card">
+                            <span>Player</span>
+                            <strong>{user.username ?? loginName}</strong>
+                          </div>
+                          <div className="mobile-stat-card">
+                            <span>CPU</span>
+                            <strong>{cpuUsed != null ? Math.round(cpuUsed) : '—'}/{user.cpu ?? '?'}</strong>
+                          </div>
+                          {cpuBucket != null && <div className="mobile-stat-card"><span>Bucket</span><strong>{cpuBucket}</strong></div>}
+                          {credits != null && <div className="mobile-stat-card"><span>Credits</span><strong>{credits.toFixed(2)}</strong></div>}
+                        </div>
+                        {userRooms.length > 0 && (
+                          <>
+                            <div className="mobile-section-label">Rooms</div>
+                            <div className="mobile-room-list">
+                            {userRooms.map((r) => (
+                              <button key={r} className="btn-ghost compact" onClick={() => { void loadRoom(r); setMobilePanel('none') }}>
+                                {r}
+                              </button>
+                            ))}
+                            </div>
+                          </>
+                        )}
+                        <div className="mobile-action-row">
+                          <button className="btn-ghost compact" style={{ width: '100%' }} onClick={() => { setShowBadgeEditor(true); setMobilePanel('none') }}>Badge</button>
+                          <button className="btn-ghost compact" style={{ width: '100%' }} onClick={handleSignOut}>Sign out</button>
+                        </div>
+                      </>
+                    )}
+                    {mobilePanel === 'room' && (
+                      <>
+                        <div className="mobile-stat-grid">
+                          <div className="mobile-stat-card"><span>Room</span><strong>{roomName}</strong></div>
+                          <div className="mobile-stat-card"><span>Owner</span><strong>{roomOwnerId ? (roomUsers[roomOwnerId]?.username ?? roomOwnerId) : 'unclaimed'}</strong></div>
+                          {roomController && <div className="mobile-stat-card"><span>RCL</span><strong>{roomController.level}</strong></div>}
+                          <div className="mobile-stat-card"><span>Tick</span><strong>{gameTime ?? '—'}</strong></div>
+                        </div>
+                        <div className="mobile-stat-grid compact">
+                          <div className="mobile-stat-card"><span>Plain</span><strong>{terrainStats.plain}</strong></div>
+                          <div className="mobile-stat-card"><span>Swamp</span><strong>{terrainStats.swamp}</strong></div>
+                          <div className="mobile-stat-card"><span>Walls</span><strong>{terrainStats.wall}</strong></div>
+                        </div>
+                        {roomStatusInfo?.status && <div className="info-row"><span>status</span><strong>{roomStatusInfo.status}</strong></div>}
+                      </>
+                    )}
+                    {mobilePanel === 'server' && (
+                      <>
+                        <div className="mobile-stat-grid">
+                          <div className="mobile-stat-card"><span>Socket</span><strong style={{ color: socketIndicator === 'live' ? '#7dc97d' : '#e0bf63' }}>{socketState}</strong></div>
+                          <div className="mobile-stat-card"><span>World</span><strong>{worldStatusLabel(worldStatus)}</strong></div>
+                          <div className="mobile-stat-card"><span>Branch</span><strong>{selectedBranch?.branch ?? '—'}</strong></div>
+                        </div>
+                        <div className="mobile-action-row">
+                          <button className="btn-ghost compact" style={{ width: '100%' }} onClick={() => { setShowWorldMap(true); setMobilePanel('none') }}>World Map</button>
+                          {(worldStatus === 'normal' || worldStatus === 'lost') && (
+                            <button className="btn-ghost compact" style={{ width: '100%' }} onClick={() => { void handleRespawn(); setMobilePanel('none') }}>
+                              Respawn
+                            </button>
+                          )}
+                        </div>
+                      </>
+                    )}
+                    {mobilePanel === 'inspect' && (
+                      selectedObject ? (
+                        <>
+                          <div className="info-row"><span>type</span><strong>{selectedObject.type}</strong></div>
+                          {selectedObject.name && <div className="info-row"><span>name</span><strong>{selectedObject.name}</strong></div>}
+                          <div className="info-row"><span>id</span><strong>{selectedObject._id}</strong></div>
+                          {selectedObject.user != null && <div className="info-row"><span>owner</span><strong>{roomUsers[selectedObject.user]?.username ?? selectedObject.user}</strong></div>}
+                          <div className="info-row"><span>position</span><strong>{selectedObject.x ?? '—'}, {selectedObject.y ?? '—'}</strong></div>
+                          {selectedObject.structureType && <div className="info-row"><span>structure</span><strong>{selectedObject.structureType}</strong></div>}
+                          {selectedObject.hits != null && selectedObject.hitsMax != null && <div className="info-row"><span>hits</span><strong>{selectedObject.hits}/{selectedObject.hitsMax}</strong></div>}
+                          {selectedObject.type === 'flag' && (
+                            <>
+                              <button className="btn-ghost compact" style={{ marginTop: 8, width: '100%' }} onClick={() => void handleChangeFlagColor(selectedObject)}>Apply Tool Colors</button>
+                              <button className="btn-ghost compact" style={{ marginTop: 6, width: '100%' }} onClick={() => void handleRemoveFlag(selectedObject)}>Remove Flag</button>
+                            </>
+                          )}
+                          {selectedObject.type !== 'flag' && (
+                            <button className="btn-ghost compact" style={{ marginTop: 8, width: '100%', color: 'var(--accent-danger)' }} onClick={() => void handleRemoveObject(selectedObject)}>
+                              {selectedObject.type === 'constructionSite' ? 'Remove Site' : selectedObject.type === 'creep' ? 'Suicide' : 'Remove Object'}
+                            </button>
+                          )}
+                          <button className="btn-ghost compact" style={{ marginTop: 6, width: '100%' }} onClick={() => { setInspectedObjectData(selectedObject); setMemoryNavigatePath(getMemoryPath(selectedObject)); setDockTab('memory'); setMobilePanel('none') }}>Memory</button>
+                        </>
+                      ) : (
+                        <div className="muted">Tap a tile or object to inspect it.</div>
+                      )
+                    )}
+                  </div>
+                </div>
+              )}
+            </>
+          )}
         </main>
 
         <aside className="world-right-rail">
           <div className="rail-resize-handle rail-resize-left" onMouseDown={(e) => { isDraggingRight.current = true; dragStartX.current = e.clientX; dragStartWidth.current = rightWidth; e.preventDefault() }} />
           <div className="flat-panel"><div className="flat-title">Server</div><div className="info-row"><span>ws</span><strong style={{ color: socketIndicator === 'live' ? '#7dc97d' : '#e0bf63' }}>{socketState}</strong></div>
             <div className="info-row"><span>world</span><strong>{worldStatusLabel(worldStatus)}</strong></div>
+            {serverGameTime != null && <div className="info-row"><span>game time</span><strong>{serverGameTime}</strong></div>}
+            {gameTickFloor != null && <div className="info-row"><span>tick floor</span><strong>{gameTickFloor}</strong></div>}
+            <div className="info-row"><span>respawn block</span><strong>{respawnProhibitedRooms.length || 'none'}</strong></div>
             {(worldStatus === 'normal' || worldStatus === 'lost') && (
               <button className="btn-ghost compact" style={{ marginTop: 6, width: '100%' }} onClick={() => void handleRespawn()}>
                 Respawn
               </button>
             )}
           </div>
+          <div className="flat-panel"><div className="flat-title">Room Admin</div>
+            <div className="info-row"><span>overview owner</span><strong>{roomOverview?.owner?.username ?? '—'}</strong></div>
+            <div className="info-row"><span>overview totals</span><strong>{Object.keys(roomOverview?.totals ?? {}).length}</strong></div>
+            <button className="btn-ghost compact" style={{ marginTop: 6, width: '100%' }} onClick={() => void refreshRoomAdminData(roomName, selectedObject)}>Refresh Room Admin</button>
+            <button className="btn-ghost compact" style={{ marginTop: 6, width: '100%' }} onClick={() => void handleCreateInvader('small', 'Melee')}>Spawn Small Invader</button>
+            <button className="btn-ghost compact" style={{ marginTop: 4, width: '100%' }} onClick={() => void handleCreateInvader('big', 'Ranged')}>Spawn Big Ranged</button>
+            <label className="script-select-wrap" style={{ marginTop: 8 }}>
+              <span>Global Intent</span>
+              <input value={globalIntentName} onChange={(e) => setGlobalIntentName(e.target.value)} placeholder="respawn" />
+            </label>
+            <textarea className="console-input" style={{ minHeight: 64, marginTop: 6 }} value={globalIntentJson} onChange={(e) => setGlobalIntentJson(e.target.value)} />
+            <button className="btn-ghost compact" style={{ marginTop: 6, width: '100%' }} onClick={() => void handleAddGlobalIntent()}>Send Global Intent</button>
+          </div>
+          {moneyHistory.length > 0 && <div className="flat-panel"><div className="flat-title">Money History</div>{moneyHistory.slice(0, 5).map((row, idx) => <div key={idx} className="info-row"><span>{String(row.type ?? row.market ?? 'entry')}</span><strong>{String(row.change ?? row.balance ?? row.value ?? '—')}</strong></div>)}</div>}
           <div className="flat-panel"><div className="flat-title">Terrain</div>
             <div className="info-row"><span>plain</span><strong>{terrainStats.plain}</strong></div>
             <div className="info-row"><span>swamp</span><strong>{terrainStats.swamp}</strong></div>
@@ -1346,6 +1730,71 @@ export default function App() {
                     </div>
                   </div>
                 )}
+                {/* Creep */}
+                {selectedObject.type === 'creep' && selectedObject.ticksToLive != null && (
+                  <div className="info-row"><span>ticks to live</span><strong style={{ color: selectedObject.ticksToLive < 200 ? '#d96c6c' : selectedObject.ticksToLive < 500 ? '#e0bf63' : undefined }}>{selectedObject.ticksToLive}</strong></div>
+                )}
+                {selectedObject.type === 'creep' && (selectedObject.fatigue ?? 0) > 0 && (
+                  <div className="info-row"><span>fatigue</span><strong style={{ color: '#e0bf63' }}>{selectedObject.fatigue}</strong></div>
+                )}
+                {selectedObject.type === 'creep' && selectedObject.body && selectedObject.body.length > 0 && (
+                  <div className="info-row"><span>body</span><strong style={{ fontSize: '0.68rem' }}>{Object.entries(selectedObject.body.reduce<Record<string, number>>((acc, b) => ({ ...acc, [b.type]: (acc[b.type] || 0) + 1 }), {})).map(([t, n]) => `${t}×${n}`).join(' ')}</strong></div>
+                )}
+                {/* Mineral */}
+                {selectedObject.type === 'mineral' && selectedObject.mineralType && (
+                  <div className="info-row"><span>mineral</span><strong>{selectedObject.mineralType}</strong></div>
+                )}
+                {selectedObject.type === 'mineral' && selectedObject.mineralAmount != null && (
+                  <div className="info-row"><span>amount</span><strong>{selectedObject.mineralAmount.toLocaleString()}</strong></div>
+                )}
+                {selectedObject.type === 'mineral' && selectedObject.density != null && (
+                  <div className="info-row"><span>density</span><strong>{(['ultra-low','low','medium','high','ultra-high'] as const)[selectedObject.density] ?? selectedObject.density}</strong></div>
+                )}
+                {selectedObject.type === 'mineral' && selectedObject.nextRegenerationTime != null && gameTime != null && (
+                  <div className="info-row"><span>regen in</span><strong>{Math.max(0, selectedObject.nextRegenerationTime - gameTime).toLocaleString()} ticks</strong></div>
+                )}
+                {/* Source */}
+                {selectedObject.type === 'source' && selectedObject.energy != null && selectedObject.energyCapacity != null && (
+                  <div className="info-row"><span>energy</span><strong>{selectedObject.energy.toLocaleString()} / {selectedObject.energyCapacity.toLocaleString()}</strong></div>
+                )}
+                {selectedObject.type === 'source' && selectedObject.nextRegenerationTime != null && gameTime != null && (
+                  <div className="info-row"><span>regen in</span><strong>{Math.max(0, selectedObject.nextRegenerationTime - gameTime).toLocaleString()} ticks</strong></div>
+                )}
+                {/* Spawn */}
+                {selectedObject.type === 'spawn' && selectedObject.nextSpawnTime != null && gameTime != null && selectedObject.nextSpawnTime > gameTime && (
+                  <div className="info-row"><span>spawning ends</span><strong>{(selectedObject.nextSpawnTime - gameTime)} ticks</strong></div>
+                )}
+                {/* Controller sign */}
+                {selectedObject.type === 'controller' && selectedObject.sign?.text && (
+                  <div className="info-row"><span>sign</span><strong style={{ fontSize: '0.7rem', whiteSpace: 'normal', wordBreak: 'break-word' }}>{selectedObject.sign.text}</strong></div>
+                )}
+                {/* Controller reservation */}
+                {selectedObject.reservation != null && (
+                  <div className="info-row"><span>reserved by</span><strong>{roomUsers[selectedObject.reservation.user ?? '']?.username ?? selectedObject.reservation.user?.slice(0, 8) ?? '?'} · {(selectedObject.reservation.ticksToEnd ?? 0).toLocaleString()}t</strong></div>
+                )}
+                {/* Decay timer (container, road, tombstone, ruin) */}
+                {selectedObject.decayTime != null && gameTime != null && selectedObject.decayTime > gameTime && (
+                  <div className="info-row"><span>decays in</span><strong style={{ color: selectedObject.decayTime - gameTime < 200 ? '#d96c6c' : '#e0bf63' }}>{(selectedObject.decayTime - gameTime).toLocaleString()} ticks</strong></div>
+                )}
+                {/* Cooldown (link, lab) */}
+                {selectedObject.cooldownTime != null && gameTime != null && selectedObject.cooldownTime > gameTime && (
+                  <div className="info-row"><span>cooldown</span><strong>{(selectedObject.cooldownTime - gameTime).toLocaleString()} ticks</strong></div>
+                )}
+                {'notifyWhenAttacked' in selectedObject && (
+                  <label className="notify-pref" style={{ marginTop: 8 }}>
+                    <input type="checkbox" checked={!!(selectedObject as RoomObject & { notifyWhenAttacked?: boolean }).notifyWhenAttacked} onChange={(e) => void handleSetNotifyWhenAttacked(e.target.checked)} />
+                    <span>Notify when attacked</span>
+                  </label>
+                )}
+                {/* Power effects */}
+                {selectedObject.effects != null && selectedObject.effects.length > 0 && (
+                  <div className="info-row"><span>effects</span><strong style={{ fontSize: '0.68rem' }}>{selectedObject.effects.map(e => `#${e.effect}${e.level ? ` L${e.level}` : ''} (${e.ticksRemaining}t)`).join(', ')}</strong></div>
+                )}
+                {selectedObject.user === '2' && selectedObject.userSummoned === user?._id && (
+                  <button className="btn-ghost compact" style={{ marginTop: 6, width: '100%' }} onClick={() => void handleRemoveInvader()}>
+                    Remove Invader
+                  </button>
+                )}
                 {selectedObject.type === 'flag' && (
                   <>
                     <button className="btn-ghost compact" style={{ marginTop: 6, width: '100%' }} onClick={() => void handleChangeFlagColor(selectedObject)}>Apply Tool Colors</button>
@@ -1367,11 +1816,16 @@ export default function App() {
 
       {showBadgeEditor && <BadgeEditor onSave={async (b) => { await apiFetch('/api/user/badge', { method: 'POST', body: JSON.stringify({ badge: b }) }); await refreshProfile() }} onClose={() => setShowBadgeEditor(false)} />}
       {showWorldMap && worldSize && <WorldMapModal worldSize={worldSize} userId={user?._id} currentRoom={roomName} apiFetch={apiFetch} onNavigate={r => void loadRoom(r)} onClose={() => setShowWorldMap(false)} />}
+      <div className="toast-stack">
+        {toastItems.map((toast) => (
+          <div key={toast.id} className="toast-item">{toast.text}</div>
+        ))}
+      </div>
 
       <div className="code-dock">
         <div className="dock-resize-handle" onMouseDown={handleDockResizeStart} />
         <div className="dock-tabs">
-          {(['script', 'console', 'memory', 'market', 'craft', 'power', 'messages', 'leaderboard'] as DockTab[]).map(t => <button key={t} className={`dock-tab ${dockTab === t ? 'active' : ''}`} onClick={() => setDockTab(t)}>{dockTabLabel(t)}</button>)}
+          {(['script', 'console', 'memory', 'market', 'craft', 'power', 'messages', 'leaderboard'] as DockTab[]).map(t => <button key={t} className={`dock-tab ${dockTab === t ? 'active' : ''}`} onClick={() => setDockTab(t)}>{dockTabLabel(t, messagesUnreadCount)}</button>)}
           {selectedBranch && <div className="dock-branch">{selectedBranch.branch} · {branchRoleLabel(selectedBranch)}</div>}
         </div>
         <div className="dock-content">
@@ -1475,7 +1929,7 @@ export default function App() {
           {dockTab === 'market' && <MarketPane apiFetch={apiFetch} />}
           {dockTab === 'craft' && <CraftPane />}
           {dockTab === 'power' && <PowerCreepsPane apiFetch={apiFetch} />}
-          {dockTab === 'messages' && <MessagesPane apiFetch={apiFetch} userId={user?._id} />}
+          {dockTab === 'messages' && <MessagesPane apiFetch={apiFetch} userId={user?._id} subscribeSocketChannel={subscribeSocketChannel} onUnreadCountChange={setMessagesUnreadCount} onToast={pushToast} />}
           {dockTab === 'leaderboard' && <LeaderboardPane apiFetch={apiFetch} />}
         </div>
       </div>

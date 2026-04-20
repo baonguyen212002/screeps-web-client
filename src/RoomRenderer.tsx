@@ -47,6 +47,7 @@ interface RoomRendererProps {
   roomUsers?: Record<string, { username?: string; badge?: { color1?: string | number; color2?: string | number; color3?: string | number } }>
   userId?: string
   roomName: string
+  gameTime?: number | null
   tickDuration?: number
   selectedObjectId?: string
   onTileClick?: (x: number, y: number) => void
@@ -698,7 +699,7 @@ function drawObjects(
   }
 }
 
-export default function RoomRenderer({ terrain, objects, roomUsers, userId, roomName, tickDuration = 1000, selectedObjectId, onTileClick }: RoomRendererProps) {
+export default function RoomRenderer({ terrain, objects, roomUsers, userId, roomName, gameTime, tickDuration = 1000, selectedObjectId, onTileClick }: RoomRendererProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
 
@@ -723,6 +724,7 @@ export default function RoomRenderer({ terrain, objects, roomUsers, userId, room
   const userIdRef = useRef(userId)
   const roomUsersRef = useRef(roomUsers)
   const selectedObjectIdRef = useRef(selectedObjectId)
+  const prevGameTimeRef = useRef<number | null>(null)
 
   useEffect(() => { panRef.current = pan }, [pan])
   useEffect(() => { zoomRef.current = zoom }, [zoom])
@@ -736,32 +738,37 @@ export default function RoomRenderer({ terrain, objects, roomUsers, userId, room
     terrainCanvasRef.current = buildTerrainCanvas(terrain)
   }, [terrain])
 
-  // When objects change (new tick): capture fromPositions, reset animation timer
+  // Reset animation only when the game tick increments (gameTime changes).
+  // Mid-tick object updates just sync the ref so the renderer shows latest data
+  // without disturbing the in-progress easeInOut sweep.
   useLayoutEffect(() => {
-    const now = performance.now()
-    const elapsed = now - animStartRef.current
-    const prevT = Math.min(1, elapsed / Math.max(100, tickDurationRef.current))
-    const prevEased = easeInOut(prevT)
+    const isNewTick = gameTime != null && gameTime !== prevGameTimeRef.current
+    if (isNewTick) {
+      prevGameTimeRef.current = gameTime
+      const now = performance.now()
+      const elapsed = now - animStartRef.current
+      const prevT = Math.min(1, elapsed / Math.max(100, tickDurationRef.current))
+      const prevEased = easeInOut(prevT)
 
-    const newFrom = new Map<string, { x: number; y: number }>()
-    for (const obj of Object.values(objectsRef.current)) {
-      if ((obj.type === 'creep' || obj.type === 'powerCreep') && obj.x != null && obj.y != null) {
-        // Use the current visual (interpolated) position so animation is continuous
-        const prevFrom = fromPosRef.current.get(obj._id)
-        if (prevFrom && (prevFrom.x !== obj.x || prevFrom.y !== obj.y)) {
-          newFrom.set(obj._id, {
-            x: lerp(prevFrom.x, obj.x, prevEased),
-            y: lerp(prevFrom.y, obj.y, prevEased),
-          })
-        } else {
-          newFrom.set(obj._id, { x: obj.x, y: obj.y })
+      const newFrom = new Map<string, { x: number; y: number }>()
+      for (const obj of Object.values(objectsRef.current)) {
+        if ((obj.type === 'creep' || obj.type === 'powerCreep') && obj.x != null && obj.y != null) {
+          const prevFrom = fromPosRef.current.get(obj._id)
+          if (prevFrom && (prevFrom.x !== obj.x || prevFrom.y !== obj.y)) {
+            newFrom.set(obj._id, {
+              x: lerp(prevFrom.x, obj.x, prevEased),
+              y: lerp(prevFrom.y, obj.y, prevEased),
+            })
+          } else {
+            newFrom.set(obj._id, { x: obj.x, y: obj.y })
+          }
         }
       }
+      fromPosRef.current = newFrom
+      animStartRef.current = now
     }
-    fromPosRef.current = newFrom
     objectsRef.current = objects
-    animStartRef.current = now
-  }, [objects])
+  }, [objects, gameTime])
 
   // Persistent render loop — deps=[] so it never restarts on hover/pan/zoom
   useEffect(() => {
@@ -999,7 +1006,7 @@ export default function RoomRenderer({ terrain, objects, roomUsers, userId, room
           height: CANVAS_SIZE,
           transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
           transformOrigin: '0 0',
-          imageRendering: 'pixelated',
+          imageRendering: 'auto',
           userSelect: 'none',
         }}
       />

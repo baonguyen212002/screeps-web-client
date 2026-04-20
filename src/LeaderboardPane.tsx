@@ -15,6 +15,8 @@ export default function LeaderboardPane({ apiFetch }: LeaderboardPaneProps) {
   const [error, setError] = useState('')
   const [list, setList] = useState<LeaderboardEntry[]>([])
   const [users, setUsers] = useState<Record<string, { username?: string; badge?: unknown }>>({})
+  const [searchName, setSearchName] = useState('')
+  const [searchResult, setSearchResult] = useState<Array<{ user?: string; score?: number; rank?: number }>>([])
 
   const loadSeasons = useCallback(async () => {
     try {
@@ -50,6 +52,24 @@ export default function LeaderboardPane({ apiFetch }: LeaderboardPaneProps) {
     void loadLeaderboard()
   }, [loadLeaderboard])
 
+  async function handleFindPlayer(e: React.FormEvent) {
+    e.preventDefault()
+    if (!searchName.trim()) return
+    setLoading(true)
+    setError('')
+    try {
+      const params = new URLSearchParams({ username: searchName.trim(), mode })
+      if (selectedSeason) params.set('season', selectedSeason)
+      const data = await apiFetch<{ list?: Array<{ user?: string; score?: number; rank?: number }> }>(`/api/leaderboard/find?${params}`)
+      setSearchResult(data.list ?? [])
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Find failed')
+      setSearchResult([])
+    } finally {
+      setLoading(false)
+    }
+  }
+
   return (
     <div className="dock-pane">
       <div className="pane-header">
@@ -71,8 +91,19 @@ export default function LeaderboardPane({ apiFetch }: LeaderboardPaneProps) {
       </div>
 
       <div className="pane-scroll">
+        <form className="console-input-row" onSubmit={handleFindPlayer} style={{ padding: 10 }}>
+          <input className="console-input" value={searchName} onChange={(e) => setSearchName(e.target.value)} placeholder="Find player…" />
+          <button type="submit" className="btn-ghost compact" disabled={!searchName.trim()}>Find</button>
+        </form>
         {loading && <div style={{ padding: 10 }} className="muted">Loading leaderboard…</div>}
         {error && <div style={{ padding: 10 }} className="form-error">{error}</div>}
+        {!loading && searchResult.length > 0 && (
+          <div style={{ padding: '0 10px 10px' }}>
+            {searchResult.map((entry, idx) => (
+              <div key={idx} className="info-row"><span>{entry.user ?? 'unknown'}</span><strong>{entry.rank ?? '—'} / {entry.score ?? '—'}</strong></div>
+            ))}
+          </div>
+        )}
 
         {!loading && !error && (
           <table className="market-table">

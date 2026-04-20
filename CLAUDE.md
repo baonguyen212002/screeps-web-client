@@ -28,7 +28,7 @@ App.tsx  (all state + logic)
 **App.tsx** is the single source of truth — it owns all state (auth, room data, WebSocket, logs) and contains all API/socket logic. There is no external state management library.
 
 **Data flow:**
-1. Auth: POST `/api/auth/steam-ticket` → token stored in `localStorage`; all API calls send `X-Token` header
+1. Auth: `POST /api/auth/signin` (or `/register`) → token stored in `localStorage`; all API calls send `X-Token` + `X-Username: local-web-client` headers
 2. Bootstrap: fetch user profile, world status, code branches, terrain via REST
 3. Live updates: SockJS WebSocket at `/socket`, subscribes to `room:{roomName}` and `user:{userId}/console`
 4. Room diffs: incoming `room:` messages contain partial diffs applied via `applyDiff()` + `indexObjects()`
